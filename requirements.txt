@@ -1,0 +1,28 @@
+# RNAgent 核心依赖
+langgraph>=0.2.50
+langchain-core>=0.3.0
+
+# LLM（DeepSeek OpenAI 兼容接口）
+langchain-openai>=0.3.0
+
+# 后端 + 前端（Python FastAPI 门户）
+fastapi>=0.110
+uvicorn>=0.29
+
+# MySQL（本地库持久化）
+pymysql>=1.1
+
+# 数据科学（预处理 / 报告，与 scLinformer requirements 对齐）
+numpy>=1.23,<2.1
+scipy>=1.9
+pandas>=1.5
+scikit-learn>=1.2
+anndata>=0.9
+scanpy>=1.9
+matplotlib>=3.6
+
+# 模型运行（scLinformer 训练评测）
+torch>=2.0
+tqdm
+leidenalg
+igraph

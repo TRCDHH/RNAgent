@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RNAgent 单细胞分析 Agent</title>
+  <style>
+    :root { --bg:#f5f6f8; --card:#fff; --line:#e5e7eb; --text:#111827; --muted:#6b7280;
+            --accent:#2563eb; --ok:#16a34a; --err:#dc2626; --warn:#d97706; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+           background: var(--bg); color: var(--text); font-size: 14px; }
+    header { background: var(--card); border-bottom: 1px solid var(--line); padding: 12px 20px; }
+    header h1 { font-size: 18px; }
+    header p { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .layout { display: grid; grid-template-columns: 300px 1fr 300px; gap: 14px; padding: 14px; height: calc(100vh - 70px); }
+    .col { display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .card h2 { font-size: 13px; margin-bottom: 10px; color: var(--muted); font-weight: 600; }
+    input, select, button, textarea { width: 100%; padding: 8px 10px; border-radius: 7px; border: 1px solid var(--line); font-size: 13px; }
+    button { background: var(--accent); color: #fff; border: none; cursor: pointer; font-weight: 600; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+    button.danger { background: transparent; color: var(--err); border: 1px solid var(--err); }
+    .row { display: flex; gap: 6px; margin-bottom: 6px; }
+    .check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    .check input { width: auto; }
+    .list { overflow-y: auto; max-height: 45%; }
+    .item { padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; margin-bottom: 8px; }
+    .item:hover { border-color: var(--accent); }
+    .item.active { border-color: var(--accent); background: #eff6ff; }
+    .item .title { font-weight: 600; font-size: 13px; }
+    .item .sub { color: var(--muted); font-size: 12px; word-break: break-all; }
+    .item .actions { margin-top: 6px; display: flex; gap: 6px; }
+    .item .actions button { padding: 4px 10px; font-size: 12px; width: auto; }
+    .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .badge.running { background: #eef2ff; color: var(--accent); }
+    .badge.success { background: #ecfdf5; color: var(--ok); }
+    .badge.failed { background: #fef2f2; color: var(--err); }
+    .badge.unknown { background: #f3f4f6; color: var(--muted); }
+    .stages { display: flex; gap: 8px; }
+    .stage { flex: 1; padding: 10px; border: 1px solid var(--line); border-radius: 8px; text-align: center; color: var(--muted); background: var(--card); font-size: 12px; }
+    .stage.done { border-color: var(--ok); color: var(--ok); }
+    .stage.active { border-color: var(--accent); color: var(--accent); }
+    .stage.failed { border-color: var(--err); color: var(--err); }
+    .timeline { flex: 1; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; font-family: Consolas, monospace; font-size: 12px; }
+    .tl-item { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px dashed #f1f1f1; }
+    .tl-time { color: var(--muted); white-space: nowrap; }
+    .tl-tag { font-weight: 600; min-width: 100px; }
+    .tl-tag.stage_start { color: var(--accent); }
+    .tl-tag.stage_end { color: var(--ok); }
+    .tl-tag.stage_error, .tl-tag.pipeline_failed { color: var(--err); }
+    .tl-tag.tool_call { color: var(--warn); }
+    .tl-tag.tool_result { color: var(--muted); }
+    .tl-detail { color: var(--muted); word-break: break-all; }
+    .empty { color: var(--muted); padding: 20px; text-align: center; }
+    /* 聊天 */
+    .chat { flex: 1; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+    .chat-box { flex: 1; overflow-y: auto; }
+    .chat-msg { margin-bottom: 10px; }
+    .chat-msg .who { font-size: 11px; color: var(--muted); }
+    .chat-msg .bubble { padding: 8px 10px; border-radius: 10px; margin-top: 2px; white-space: pre-wrap; }
+    .chat-msg.user .bubble { background: #eff6ff; }
+    .chat-msg.ai .bubble { background: #f3f4f6; }
+    /* modal */
+    .modal-mask { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; align-items: center; justify-content: center; }
+    .modal-mask.show { display: flex; }
+    .modal { background: #fff; border-radius: 12px; width: 80vw; max-width: 1100px; max-height: 85vh; overflow-y: auto; padding: 20px; }
+    .modal h3 { margin-bottom: 12px; }
+    .modal .close { float: right; cursor: pointer; color: var(--muted); font-size: 20px; }
+    .modal pre { white-space: pre-wrap; font-family: inherit; font-size: 13px; }
+    .metrics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .metric { background: #f9fafb; border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; }
+    .metric b { font-size: 14px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>RNAgent 单细胞 RNA 分析 Agent</h1>
+    <p>LangGraph 编排 + DeepSeek + 本地 MySQL；预处理 -> scLinformer 训练评测 -> 结果生成 HTML 报告</p>
+  </header>
+
+  <div class="layout">
+    <!-- 左列：数据集 + 任务管理 -->
+    <div class="col">
+      <div class="card">
+        <h2>数据集管理</h2>
+        <div class="row"><input id="dsName" placeholder="数据集名称" /><input id="dsPath" placeholder="本地路径 (如 D:\\data\\demo.h5ad)" /></div>
+        <button id="dsCreate">新建数据集</button>
+        <div style="height:8px"></div>
+        <div class="list" id="dsList"></div>
+      </div>
+      <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden">
+        <h2>任务管理</h2>
+        <div class="list" id="taskList" style="flex:1;min-height:0;max-height:none"></div>
+      </div>
+    </div>
+
+    <!-- 中列：进度 + 指令流程 -->
+    <div class="col">
+      <div class="stages">
+        <div class="stage" id="st-preprocess">① 数据预处理</div>
+        <div class="stage" id="st-training">② 模型训练</div>
+        <div class="stage" id="st-analyze">③ 结果分析</div>
+      </div>
+      <div class="timeline" id="timeline"><div class="empty">选择数据集点「开始分析」，或点击左侧任务查看指令流程</div></div>
+    </div>
+
+    <!-- 右列：AI 聊天 -->
+    <div class="col">
+      <div class="card chat">
+        <h2>AI 助手</h2>
+        <div class="chat-box" id="chatBox"><div class="empty">问我单细胞分析相关问题</div></div>
+        <div class="row">
+          <input id="chatInput" placeholder="输入问题..." />
+          <button id="chatSend" style="width:auto">发送</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentTask = null, es = null;
+
+    async function loadDatasets() {
+      const r = await fetch('/api/datasets'); const d = await r.json();
+      const box = document.getElementById('dsList');
+      if (!d.datasets.length) { box.innerHTML = '<div class="empty">暂无数据集</div>'; return; }
+      box.innerHTML = '';
+      d.datasets.forEach(ds => {
+        const el = document.createElement('div'); el.className = 'item';
+        el.innerHTML = `<div class="title">#${ds.id} ${esc(ds.name)}</div>
+          <div class="sub">${esc(ds.path)}</div>
+          <div class="actions"><button onclick="startAnalysis(${ds.id})">开始分析</button></div>`;
+        box.appendChild(el);
+      });
+    }
+
+    async function loadTasks() {
+      const r = await fetch('/api/tasks'); const d = await r.json();
+      const box = document.getElementById('taskList');
+      if (!d.tasks.length) { box.innerHTML = '<div class="empty">暂无任务</div>'; return; }
+      box.innerHTML = '';
+      d.tasks.forEach(t => {
+        const status = (t.process && t.process.status) || 'unknown';
+        const el = document.createElement('div');
+        el.className = 'item' + (currentTask === t.id ? ' active' : '');
+        el.innerHTML = `<div class="title">#${t.id} ${esc(t.name)} <span class="badge ${status}">${status}</span></div>
+          <div class="sub">${esc(t.path || '')}</div>
+          <div class="actions">
+            <button data-result="${t.id}">查看结果</button>
+          </div>`;
+        el.style.cursor = 'pointer';
+        el.onclick = () => openTask(t.id);
+        box.appendChild(el);
+      });
+      box.querySelectorAll('[data-result]').forEach(b => b.onclick = (e) => { e.stopPropagation(); showResult(Number(b.dataset.result)); });
+    }
+
+    document.getElementById('dsCreate').onclick = async () => {
+      const name = document.getElementById('dsName').value.trim();
+      const path = document.getElementById('dsPath').value.trim();
+      if (!name || !path) { alert('请填写数据集名称和本地路径'); return; }
+      await fetch('/api/datasets', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name, path}) });
+      document.getElementById('dsName').value = ''; document.getElementById('dsPath').value = '';
+      loadDatasets();
+    };
+
+    function resetStages() { ['preprocess','training','analyze'].forEach(s => document.getElementById('st-'+s).className = 'stage'); }
+    function setStage(s, cls) { document.getElementById('st-'+s).className = 'stage ' + cls; }
+    function applyStage(ev) {
+      if (ev.event === 'stage_start') setStage(ev.stage, 'active');
+      if (ev.event === 'stage_end') setStage(ev.stage, 'done');
+      if (ev.event === 'stage_error') setStage(ev.stage, 'failed');
+      // 失败发生在哪个阶段就高亮哪个（preprocess/training/analyze）
+      if (ev.event === 'pipeline_failed' && ev.current_stage) setStage(ev.current_stage, 'failed');
+    }
+    function clearTimeline() { const tl = document.getElementById('timeline'); tl.innerHTML = ''; }
+    function appendEvent(ev) {
+      const tl = document.getElementById('timeline');
+      if (tl.querySelector('.empty')) tl.innerHTML = '';
+      const div = document.createElement('div'); div.className = 'tl-item';
+      const t = ev.ts ? new Date(ev.ts*1000).toLocaleTimeString() : '';
+      let detail = '';
+      if (ev.message) detail = ev.message;
+      if (ev.event === 'tool_result' && ev.result) detail += ' → ' + JSON.stringify(ev.result);
+      if (ev.event === 'stage_error' || ev.event === 'pipeline_failed') detail += ' ' + (ev.error || '');
+      if (ev.event === 'stage_end') detail = ev.report_url ? ('报告: ' + ev.report_url) : ((ev.tools||[]).join(', '));
+      div.innerHTML = `<span class="tl-time">${t}</span><span class="tl-tag ${ev.event}">${ev.event}</span><span class="tl-detail">${esc(detail)}</span>`;
+      tl.appendChild(div); tl.scrollTop = tl.scrollHeight;
+    }
+
+    async function startAnalysis(datasetId) {
+      resetStages(); clearTimeline();
+      const r = await fetch('/api/tasks/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ dataset_id: datasetId }) });
+      const d = await r.json();
+      currentTask = d.task_id;
+      loadTasks();
+      if (es) es.close();
+      es = new EventSource(`/api/tasks/${d.task_id}/stream`);
+      es.onmessage = m => { const ev = JSON.parse(m.data); appendEvent(ev); applyStage(ev);
+        if (ev.event === 'pipeline_end' || ev.event === 'pipeline_failed') { es.close(); es = null; loadTasks(); } };
+    }
+
+    // 点击任务列表加载旧任务流程（修复跳转 bug）
+    async function openTask(taskId) {
+      currentTask = taskId; loadTasks();
+      resetStages(); clearTimeline();
+      const r = await fetch(`/api/tasks/${taskId}/state`); const s = await r.json();
+      const events = s.events || [];
+      if (!events.length) { document.getElementById('timeline').innerHTML = '<div class="empty">该任务暂无过程记录</div>'; }
+      events.forEach(ev => { appendEvent(ev); applyStage(ev); });
+      // 依据状态修正阶段高亮
+      if (s.status === 'success') ['preprocess','training','analyze'].forEach(x => setStage(x, 'done'));
+    }
+
+    async function showResult(taskId) {
+      // 同步打开空白页，避免被浏览器弹窗拦截；再根据状态跳转或关闭
+      const win = window.open('', '_blank');
+      const r = await fetch(`/api/tasks/${taskId}/state`); const s = await r.json();
+      if (s.status === 'success') {
+        if (win) win.location.href = `/output/${taskId}/report.html`;
+      } else {
+        if (win) win.close();
+        alert(s.status === 'failed' ? `执行失败：${s.error || ''}` : '任务仍在运行，请稍后再查看结果');
+      }
+    }
+
+    // 聊天（流式输出）
+    function addChat(who, text) {
+      const box = document.getElementById('chatBox');
+      if (box.querySelector('.empty')) box.innerHTML = '';
+      const div = document.createElement('div'); div.className = 'chat-msg ' + who;
+      div.innerHTML = `<div class="who">${who === 'user' ? '你' : 'AI 助手'}</div><div class="bubble"></div>`;
+      const bubble = div.querySelector('.bubble');
+      if (text) bubble.textContent = text;
+      box.appendChild(div); box.scrollTop = box.scrollHeight;
+      return bubble;
+    }
+    async function sendChat() {
+      const inp = document.getElementById('chatInput'); const msg = inp.value.trim();
+      if (!msg) return;
+      addChat('user', msg); inp.value = '';
+      const box = document.getElementById('chatBox');
+      const bubble = addChat('ai');
+      const r = await fetch('/api/chat/stream', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ message: msg }) });
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try { bubble.textContent += JSON.parse(line.slice(6)).delta; } catch (e) {}
+          }
+        }
+        box.scrollTop = box.scrollHeight;
+      }
+    }
+    document.getElementById('chatSend').onclick = sendChat;
+    document.getElementById('chatInput').onkeydown = e => { if (e.key === 'Enter') sendChat(); };
+
+    function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+    loadDatasets(); loadTasks();
+  </script>
+</body>
+</html>
