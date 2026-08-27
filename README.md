@@ -2,267 +2,466 @@
 
 # 🧬 RNAgent
 
-**面向单细胞转录组学的多阶段智能分析 Agent 系统**
+### Autonomous Agent System for Single-Cell RNA-seq Analysis
 
-*LangGraph 编排 · DeepSeek 驱动 · scLinformer 建模 · 全链路可观测*
+**From raw data to reproducible analysis — automated, observable, and explainable.**
 
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C?style=flat-square)](https://github.com/langchain-ai/langgraph)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-4D6BFE?style=flat-square)](https://www.deepseek.com/)
-[![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?style=flat-square&logo=mysql&logoColor=white)](https://www.mysql.com/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![scRNA-seq](https://img.shields.io/badge/Domain-scRNA--seq-8E44AD?style=flat-square)](https://en.wikipedia.org/wiki/Single-cell_sequencing)
+<br/>
 
-**系统架构**
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.x-1C3C3C?style=for-the-badge)](https://github.com/langchain-ai/langgraph)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek-4D6BFE?style=for-the-badge)](https://www.deepseek.com/)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://www.mysql.com/)
 
-<img src="imgs/a.png" alt="RNAgent 系统架构图" width="880"/>
+<br/>
 
-从一份原始的单细胞 RNA 测序数据，到一份可解读的完整分析报告 —— 全程由 Agent 自主决策：
-
-**格式判定 → 智能修复 → 参数决策 → 模型训练 → 指标评测 → 报告生成**
+**LangGraph Orchestration · DeepSeek Reasoning · scLinformer Modeling · Full Observability**
 
 </div>
 
 ---
 
-## 📑 目录
+## ✨ What is RNAgent?
 
-- [🔄 流水线详解](#-流水线详解)
-- [🚀 快速开始](#-快速开始)
-- [⚙️ 配置项](#️-配置项)
-- [📡 API 文档](#-api-文档)
-- [📦 任务产物清单](#-任务产物清单)
-- [🧠 Skill 系统](#-skill-系统)
-- [⭐ 核心特性](#-核心特性)
-- [📁 项目结构](#-项目结构)
-- [🗺️ Roadmap](#-roadmap)
+RNAgent is a **multi-stage intelligent Agent system for single-cell transcriptomics analysis**.
+
+Instead of requiring users to manually connect preprocessing scripts, model training, evaluation and report generation, RNAgent turns the entire workflow into an **Agent-driven pipeline**:
+
+```text
+Raw scRNA-seq Data
+        │
+        ▼
+┌──────────────────┐
+│  01  Preprocess  │  Detect · Validate · Repair · QC
+└────────┬─────────┘
+         │ structured artifacts
+         ▼
+┌──────────────────┐
+│  02  Model       │  Inspect · Configure · Train · Evaluate
+└────────┬─────────┘
+         │ metrics + embeddings
+         ▼
+┌──────────────────┐
+│  03  Analysis     │  Aggregate · Explain · Report
+└────────┬─────────┘
+         │
+         ▼
+   📄 HTML Report
+```
+
+> **Core idea:** let the Agent decide *what to do next*, while every important operation leaves a traceable artifact.
 
 ---
 
-**分层职责**：
-
-| 层 | 模块 | 职责 |
-|----|------|------|
-| 前端 | `app/static/` | 任务触发、进度观测、报告查看、AI 问答 |
-| 后端 | `app/api.py` | REST + SSE + 静态托管，纯业务门户（无 AI 逻辑） |
-| 编排 | `app/graph/` | 三阶段 StateGraph + 条件路由 + 错误处理 |
-| 工具 | `app/tools/` | 各阶段实际执行逻辑（全本地，无 MCP） |
-| 知识 | `app/skills/` | SKILL.md 决策知识库 |
-| 持久化 | `app/db.py` | MySQL（`dataset` / `task` 表） |
-
----
-
-## 🔄 流水线详解
-
-### 阶段一：数据预处理
+## 🖼️ System Overview
 
 <p align="center">
-  <img src="imgs/b.png" alt="数据预处理流程图" width="880"/>
+  <img src="imgs/a.png" alt="RNAgent System Architecture" width="920"/>
 </p>
 
-典型场景（自动处理）：**10x 输出目录 + 含 `cell.type` 与 `Sample` 的 annotations.csv**
+RNAgent is organized around three layers of responsibility:
 
-> `load_data` 检测非 h5ad 且列名偏差 → `judge` 判 cell_type/batch FAIL → 合并 annotations（自动对齐 barcode `-1` 后缀）→ `rename_column` 改名 → 多级值（如 `"T cell:CD4"`）升级 `execute_code` 拆分 → 重跑 judge 全 PASS → 数据分析 → 生成产物 → 保存交训练。
-
-### 阶段二：模型运行
-
-1. **环境探测**：`inspect_environment` 查询 GPU 型号 / 显存
-2. **参数决策**：读取预处理产物的 `obs` 列 + 显存 + 数据量 → `resolve_model_config`
-3. **训练评测**：调用真实 scLinformer `Model`，训练后执行嵌入评测，产出指标 CSV + UMAP
-
-### 阶段三：结果分析
-
-`collect_report_context` 汇总两阶段全部产物（数据规模、判定结论、训练配置、环境、指标、UMAP、产物路径）→ DeepSeek 生成自包含 HTML 报告 → 保存至 `runtime/task/{task_id}/report.html`。
+| Layer | Implementation | Responsibility |
+|:---|:---|:---|
+| **Frontend** | `app/static/` | Task creation · progress · logs · reports · AI Q&A |
+| **API** | `app/api.py` | REST · SSE · static hosting |
+| **Agent / Graph** | `app/graph/` | StateGraph · routing · error handling |
+| **Tools** | `app/tools/` | Actual preprocessing / modeling / reporting |
+| **Skills** | `app/skills/` | Decision knowledge in `SKILL.md` |
+| **Persistence** | `app/db.py` | MySQL dataset / task state |
 
 ---
 
-## 🚀 快速开始
+## 🔄 The Pipeline
 
-### 环境要求
+### 01 · Data Preprocessing
 
-- Python **≥ 3.10**
-- 本地 **MySQL 8.0**（需可登录 root 执行初始化）
-- GPU 可选（CPU 亦可运行，batch_size 自动降级）
+<p align="center">
+  <img src="imgs/b.png" alt="RNAgent Data Preprocessing Pipeline" width="920"/>
+</p>
 
-### 安装与启动
+The preprocessing Agent does not assume that the input is already clean.
 
-```bash
-# 1) 克隆并进入项目
-git clone <repo-url> && cd z-newRnagent
+A typical workflow:
 
-# 2) 创建虚拟环境
-python -m venv .venv
-.venv\Scripts\activate            # Windows
-# source .venv/bin/activate       # Linux / macOS
-
-# 3) 安装依赖（默认源慢可用阿里镜像）
-pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
-
-# 4) 初始化数据库（首次，输入 root 密码）
-mysql -u root -p < init.sql
-
-# 5) 配置 DeepSeek API Key
-copy .env.example .env             # Windows
-# cp .env.example .env             # Linux / macOS
-# 编辑 .env 填入 LLM_API_KEY，或直接设环境变量：
-#   $env:LLM_API_KEY = "sk-xxx"
-
-# 6) 启动
-python server.py
+```text
+Load Data
+   ↓
+Validate Format & Metadata
+   ↓
+PASS ────────────────→ Continue
+   │
+   ├─ WARNING → Normalize / Rename
+   │
+   └─ FAIL    → Repair / Execute Code
+                    ↓
+                  Re-check
+                    ↓
+                   PASS
+                    ↓
+                 QC Analysis
+                    ↓
+              Structured Artifacts
 ```
 
-浏览器打开 **http://localhost:8000**，体验完整流程：
+For example, when receiving a **10x output directory + `annotations.csv`** containing `cell.type` and `Sample`, RNAgent can detect column mismatches, align barcodes, rename columns, split multi-level labels such as `"T cell:CD4"`, re-run validation, and only continue when the required checks pass.
 
-**新建数据集（名称 + 本地 h5ad 路径）→ 点击「开始分析」→ 实时观察三阶段进度与日志 → 点击「查看结果」阅读 HTML 分析报告**
+**Design principle:**  
+> **Confirm the raw count matrix first — then do everything else.**
 
----
-
-## ⚙️ 配置项
-
-全部支持环境变量覆盖：
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `LLM_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口地址 |
-| `LLM_API_KEY` | —（必填才启用 LLM） | DeepSeek API Key |
-| `LLM_MODEL` | `deepseek-v4-flash` | 模型名 |
-| `MODEL_EPOCHS` | `1` | 训练轮数（演示用 1，真实训练可调大） |
-| `MODEL_BATCH_SIZE` | 自动 | 留空按显存+数据量查表；OOM 时可手动调小 |
-| `SCLINFORMER_DIR` | `../../model/scLinformer-main` | scLinformer 源码目录 |
+This prevents accidental secondary normalization or destructive preprocessing.
 
 ---
 
-## 📡 API 文档
+### 02 · Model Running
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/datasets` | 数据集列表 |
-| `POST` | `/api/datasets` | 新建数据集 `{"name": "...", "path": "D:/data/demo.h5ad"}` |
-| `DELETE` | `/api/datasets/{id}` | 删除数据集 |
-| `POST` | `/api/tasks/run` | 触发分析任务 `{"dataset_id": 1}`，返回 `task_id` |
-| `GET` | `/api/tasks` | 任务列表（含过程状态） |
-| `GET` | `/api/tasks/{id}/state` | 任务完整过程 / 结果（JSON） |
-| `GET` | `/api/tasks/{id}/stream` | **SSE** 订阅事件流（日志 / 进度） |
-| `GET` | `/output/{id}/report.html` | 任务生成的 HTML 分析报告 |
-| `POST` | `/api/chat` | AI 助手对话（可查询任务真实指标） |
-| `POST` | `/api/chat/stream` | AI 助手流式对话（**SSE**） |
+The model Agent connects the validated dataset to the real **scLinformer** implementation.
 
----
-
-## 📦 任务产物清单
-
-每次任务输出至 `runtime/task/{task_id}/`：
-
+```text
+Environment Inspection
+        ↓
+GPU / VRAM / Dataset Size
+        ↓
+Parameter Resolution
+        ↓
+scLinformer Training
+        ↓
+Embedding Evaluation
+        ↓
+Metrics + UMAP
 ```
+
+Key decisions are made automatically:
+
+- `use_batch` / `use_cell_type` from available `obs` columns
+- `batch_size` from GPU memory + dataset size
+- training configuration from the resolved environment
+- real model execution rather than mocked results
+- automatic fallback to smaller batch sizes when necessary
+
+---
+
+### 03 · Result Analysis
+
+The reporting Agent collects artifacts from the first two stages:
+
+```text
+Dataset
++ Validation Results
++ QC Analysis
++ Training Config
++ Environment
++ Metrics
++ UMAP
++ Artifact Paths
+        ↓
+   DeepSeek
+        ↓
+Self-contained HTML Report
+```
+
+The generated report is stored at:
+
+```text
+runtime/task/{task_id}/report.html
+```
+
+If the LLM is unavailable, a local report template provides a fallback path.
+
+---
+
+# ⭐ Why RNAgent?
+
+<div align="center">
+
+| 🧩 Agent Pipeline | 🛡️ Safe Preprocessing | ⚙️ Auto Configuration |
+|:---:|:---:|:---:|
+| 3-stage StateGraph | Contract-based validation | GPU + data-aware |
+| Conditional routing | Multi-level repair | Automatic batch sizing |
+| Error handling | Re-check after repair | OOM fallback |
+
+| 📡 Full Observability | 🧠 Skill Library | 💬 AI Analysis |
+|:---:|:---:|:---:|
+| SSE live events | Progressive disclosure | DeepSeek reports |
+| Timeline UI | `SKILL.md` knowledge | Function calling |
+| `events.jsonl` audit | Domain QA | Real metrics only |
+
+</div>
+
+---
+
+## 📊 Output & Reproducibility
+
+Every task is isolated under:
+
+```text
 runtime/task/{task_id}/
-├── report.html                  # 最终 HTML 分析报告（DeepSeek 生成）
-├── processed_rna.h5ad           # 修复后的原始计数矩阵（交训练）
-├── summary_metrics.csv          # 总评测：ARI / AMI / NMI / HOM / Cell_ASW / Batch_ASW / Graph_Connectivity
-├── cluster_metrics.csv          # 各 resolution 聚类指标（有 cell_type 才有）
-├── batch_metrics.csv            # 批次 / ASW 指标（有 batch 才有）
-├── umap_cell_type.png           # UMAP（cell_type 着色）
-├── umap_batch.png               # UMAP（batch 着色）
-├── model/                       # 模型权重
+```
+
+```text
+├── report.html
+├── processed_rna.h5ad
+├── summary_metrics.csv
+├── cluster_metrics.csv
+├── batch_metrics.csv
+├── umap_cell_type.png
+├── umap_batch.png
+│
+├── model/
 │   ├── rna_encoder.pth
 │   ├── rna_decoder.pth
 │   └── cell_type_discriminator.pth
-├── processed_data/              # 数据划分（64/16/20）
+│
+├── processed_data/
 │   ├── train_ids.npy
 │   ├── valid_ids.npy
 │   └── test_ids.npy
-└── 数据处理结果分析/              # 预处理阶段产物
-    ├── 01_数据状况.md             # 判定结论 + 对模型配置的影响（固定句式）
-    ├── 02_数据分析报告.md         # 单细胞通用分析模板（QC / 组成 / 覆盖率）
-    ├── 03_操作审计.md             # 全部操作记录（时间 / 工具 / 代码，可追溯）
-    └── figures/                  # QC 图（UMI 分布 / UMI-基因相关 / 组成柱状图）
+│
+└── 数据处理结果分析/
+    ├── 01_数据状况.md
+    ├── 02_数据分析报告.md
+    ├── 03_操作审计.md
+    └── figures/
 ```
 
-**指标解读规范**：ARI / AMI / NMI / HOM 越接近 1 聚类与真实标签越一致；Cell_ASW 越大细胞类型分离越好；Batch_ASW 反映去批次效果；Graph_Connectivity 越接近 1 批次内连通性越好。缺 `cell_type` / `batch` 时对应指标跳过并标注 N/A，**绝不编造数值**。
+### Evaluation Metrics
+
+RNAgent reports:
+
+`ARI` · `AMI` · `NMI` · `HOM` · `Cell_ASW` · `Batch_ASW` · `Graph_Connectivity`
+
+Interpretation:
+
+- **ARI / AMI / NMI / HOM** → agreement with reference labels
+- **Cell_ASW** → cell-type separation
+- **Batch_ASW** → batch-effect behavior
+- **Graph_Connectivity** → within-batch connectivity
+
+Missing `cell_type` or `batch` columns cause the corresponding metrics to be skipped and marked **N/A**. RNAgent does **not fabricate metric values**.
 
 ---
 
-## 🧠 Skill 系统
+## 🧠 Skill System
 
-决策知识以 `SKILL.md` 形式沉淀在 `app/skills/registry/`，运行时按需加载：
+Decision knowledge is stored as modular `SKILL.md` files under:
 
-| Skill | 作用 |
-|-------|------|
-| `preprocess-qc` | 判定契约清单 + 三级分流修复 SOP |
-| `model-running` | 参数决策规则 + batch_size 查表 + 数据量案例 + OOM 兜底 |
-| `report-generation` | 产物清单 + 分析要点 + 指标解读规范 + 缺列固定说法 |
-| `sc-domain-qa` | 单细胞领域问答知识 |
-| `training-troubleshoot` | 训练故障排查 |
-| `h5ad-conversion` | 数据格式转换指南 |
-
-`SkillLibrary.disclose()` 常驻只暴露名称与描述；`load(name)` 按需加载全文 —— 渐进式披露，节省 token。
-
----
-
-## ⭐ 核心特性
-
-| 特性 | 说明 |
-|------|------|
-| **三阶段 Agent 流水线** | LangGraph StateGraph 编排，结构化产物衔接，失败自动路由错误处理，全程可追溯 |
-| **判定契约 + 三级分流修复** | 8 项检查逐项 PASS/WARNING/FAIL；同义列 `rename_column`，复杂情况 `execute_code` 沙箱兜底，有歧义停下询问。核心原则：*先确认原始计数，再谈其它*，避免二次归一化失真 |
-| **智能参数决策** | `use_batch` / `use_cell_type` 由 obs 列决定；`batch_size` 按显存+数据量查表；`use_universal_model` 固定 False；其余沿用 train.py 默认 |
-| **全链路可观测** | 阶段动作 SSE 实时推送，前端时间线逐条展示，事件落盘 `events.jsonl` 供审计 |
-| **DeepSeek 报告与对话** | 汇总两阶段产物生成专业 HTML 报告（本地模板兜底）；AI 助手 function calling 查真实指标，不编造数据 |
-| **Skill 渐进式披露** | 决策知识沉淀 SKILL.md，常驻只暴露摘要，用到才加载全文 |
-
----
-
-## 📁 项目结构
-
+```text
+app/skills/registry/
 ```
+
+| Skill | Purpose |
+|:---|:---|
+| `preprocess-qc` | Validation contracts + repair SOP |
+| `model-running` | Parameter rules + batch-size lookup + OOM fallback |
+| `report-generation` | Report artifacts + metric interpretation |
+| `sc-domain-qa` | Single-cell domain knowledge |
+| `training-troubleshoot` | Training failure diagnosis |
+| `h5ad-conversion` | Data-format conversion |
+
+RNAgent uses **progressive disclosure**:
+
+```text
+SkillLibrary.disclose()
+        ↓
+Names + descriptions only
+        ↓
+load(name)
+        ↓
+Full knowledge when needed
+```
+
+This keeps the runtime context focused while retaining domain-specific decision knowledge.
+
+---
+
+# 🚀 Quick Start
+
+## Requirements
+
+- Python **≥ 3.10**
+- MySQL **8.0**
+- GPU optional — CPU execution is supported
+- DeepSeek API key for LLM-powered reporting / Q&A
+
+## Installation
+
+```bash
+# 1. Clone
+git clone <repo-url>
+cd z-newRnagent
+
+# 2. Create environment
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# Linux / macOS
+# source .venv/bin/activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# Optional: Aliyun mirror
+# pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+
+# 4. Initialize MySQL
+mysql -u root -p < init.sql
+
+# 5. Configure environment
+copy .env.example .env
+
+# Linux / macOS
+# cp .env.example .env
+
+# Edit .env and set:
+# LLM_API_KEY=sk-xxx
+
+# 6. Start RNAgent
+python server.py
+```
+
+Then open:
+
+**http://localhost:8000**
+
+```text
+Create Dataset
+      ↓
+Start Analysis
+      ↓
+Observe Live Progress
+      ↓
+View Results
+      ↓
+Read HTML Report
+```
+
+---
+
+## ⚙️ Configuration
+
+All major settings can be overridden with environment variables.
+
+| Variable | Default | Description |
+|:---|:---|:---|
+| `LLM_BASE_URL` | `https://api.deepseek.com` | OpenAI-compatible endpoint |
+| `LLM_API_KEY` | — | DeepSeek API key |
+| `LLM_MODEL` | `deepseek-v4-flash` | LLM model |
+| `MODEL_EPOCHS` | `1` | Training epochs |
+| `MODEL_BATCH_SIZE` | Auto | GPU / dataset-aware batch size |
+| `SCLINFORMER_DIR` | `../../model/scLinformer-main` | scLinformer source directory |
+
+---
+
+# 📡 API
+
+| Method | Endpoint | Purpose |
+|:---:|:---|:---|
+| `GET` | `/api/datasets` | List datasets |
+| `POST` | `/api/datasets` | Create dataset |
+| `DELETE` | `/api/datasets/{id}` | Delete dataset |
+| `POST` | `/api/tasks/run` | Start analysis task |
+| `GET` | `/api/tasks` | List tasks |
+| `GET` | `/api/tasks/{id}/state` | Get task state / results |
+| `GET` | `/api/tasks/{id}/stream` | SSE logs / progress |
+| `GET` | `/output/{id}/report.html` | View HTML report |
+| `POST` | `/api/chat` | AI assistant |
+| `POST` | `/api/chat/stream` | Streaming AI assistant |
+
+---
+
+# 🗂️ Project Structure
+
+```text
 z-newRnagent/
-├── server.py                        # 启动入口（python server.py）
-├── run_demo.py                      # 纯 CLI 演示入口
-├── init.sql                         # MySQL 建库 / 建用户 / 建表
+├── server.py
+├── run_demo.py
+├── init.sql
 ├── requirements.txt
+│
 └── app/
-    ├── api.py                       # FastAPI：REST + SSE + 静态托管
-    ├── main.py                      # 流水线执行（CLI 与 API 共用）
-    ├── state.py                     # PipelineState（顶层状态）
-    ├── config.py                    # 全局配置（环境变量可覆盖）
-    ├── db.py                        # MySQL 数据访问层
-    ├── llm.py                       # LLM 工厂（ChatOpenAI → DeepSeek）
-    ├── event_emitter.py             # 事件流（内存缓冲 + jsonl 落盘）
+    ├── api.py
+    ├── main.py
+    ├── state.py
+    ├── config.py
+    ├── db.py
+    ├── llm.py
+    ├── event_emitter.py
+    │
     ├── static/
-    │   └── index.html              # 前端门户
+    │   └── index.html
+    │
     ├── graph/
-    │   ├── builder.py              # 组装 StateGraph
-    │   └── nodes.py                # 三阶段节点 + 条件路由
+    │   ├── builder.py
+    │   └── nodes.py
+    │
     ├── tools/
-    │   ├── preprocess_tools.py    # 预处理：9 个工具 + 编排入口
-    │   ├── model_tools.py          # 模型运行：环境/决策/训练评测
-    │   ├── report_tools.py         # 结果分析：上下文汇总 + 报告生成
-    │   ├── assistant_tools.py      # AI 助手 function calling 工具
-    │   └── local_tools.py          # 阶段入口转发
+    │   ├── preprocess_tools.py
+    │   ├── model_tools.py
+    │   ├── report_tools.py
+    │   ├── assistant_tools.py
+    │   └── local_tools.py
+    │
     └── skills/
-        ├── library.py              # Skill 库（渐进式披露）
-        └── registry/               # 6 个 SKILL.md
+        ├── library.py
+        └── registry/
 ```
 
 ---
 
-## 🗺️ Roadmap
+# 🛣️ Roadmap
 
-- [x] LangGraph 三阶段编排 + 条件路由 + 错误处理
-- [x] 预处理：判定契约 + 三级分流修复 + QC 分析 + 审计产物
-- [x] 模型运行：接真实 scLinformer + 参数自动决策 + 评测指标
-- [x] 结果分析：DeepSeek 生成 HTML 报告（本地模板兜底）
-- [x] AI 助手 function calling（查询真实任务指标）
-- [x] SSE 实时推送 + MySQL 持久化
-- [ ] Checkpoint 接 Redis（断点续跑）
-- [ ] 接入 Langfuse 全链路 Trace
-- [ ] execute_code 沙箱升级 Docker 隔离
-- [ ] 前端迁移 Vue 3
+### Completed
+
+- [x] LangGraph 3-stage orchestration
+- [x] Conditional routing + error handling
+- [x] Validation contracts + multi-level repair
+- [x] QC analysis + audit artifacts
+- [x] Real scLinformer training + evaluation
+- [x] Automatic parameter / batch-size decisions
+- [x] DeepSeek HTML report generation
+- [x] AI assistant with function calling
+- [x] SSE real-time progress
+- [x] MySQL persistence
+
+### Next
+
+- [ ] Redis checkpoint & resumable execution
+- [ ] Langfuse full-chain tracing
+- [ ] Docker-isolated `execute_code`
+- [ ] Vue 3 frontend
+
+---
+
+## 🔬 Design Philosophy
+
+RNAgent is built around four principles:
+
+**01 — Validate before acting**  
+Never assume that incoming biological data already satisfies model requirements.
+
+**02 — Let the Agent decide, not fabricate**  
+Agents orchestrate real tools and real model execution. Results come from artifacts, not imagination.
+
+**03 — Every step should be observable**  
+Progress, decisions, tool calls and outputs should remain inspectable after execution.
+
+**04 — Knowledge should be reusable**  
+Domain decisions live in Skills instead of being hard-coded into a single pipeline.
 
 ---
 
 <div align="center">
 
-**RNAgent** — 让单细胞数据分析流程自主运转
+### 🧬 RNAgent
+
+**Making single-cell analysis workflows autonomous.**
+
+<br/>
+
+*LangGraph × DeepSeek × scLinformer × FastAPI*
 
 </div>
