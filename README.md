@@ -353,6 +353,10 @@ All major settings can be overridden with environment variables.
 | `MODEL_EPOCHS` | `1` | Training epochs |
 | `MODEL_BATCH_SIZE` | Auto | GPU / dataset-aware batch size |
 | `SCLINFORMER_DIR` | `../../model/scLinformer-main` | scLinformer source directory |
+| `SANDBOX_IMAGE` | `rna-sandbox:latest` | `execute_code` sandbox image (auto-built from `docker/sandbox.Dockerfile` on first run) |
+| `SANDBOX_TIMEOUT` | `300` | Sandbox execution timeout in seconds (container is force-killed on expiry) |
+| `SANDBOX_MEM_MB` | `4096` | Sandbox memory limit (MB) |
+| `SANDBOX_CPUS` | `2` | Sandbox CPU limit |
 
 ---
 
@@ -381,6 +385,9 @@ z-newRnagent/
 ├── run_demo.py
 ├── init.sql
 ├── requirements.txt
+│
+├── docker/
+│   └── sandbox.Dockerfile        # execute_code sandbox image
 │
 └── app/
     ├── api.py
@@ -426,12 +433,12 @@ z-newRnagent/
 - [x] AI assistant with function calling
 - [x] SSE real-time progress
 - [x] MySQL persistence
+- [x] Docker-isolated `execute_code` (no-network, read-only rootfs, non-root, resource-capped, timeout-killed)
 
 ### Next
 
 - [ ] Redis checkpoint & resumable execution
 - [ ] Langfuse full-chain tracing
-- [ ] Docker-isolated `execute_code`
 - [ ] Vue 3 frontend
 
 ---

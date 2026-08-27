@@ -360,48 +360,193 @@ def rename_column(adata, from_col: str, to_col: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 工具 4：execute_code —— 兜底执行模型/用户自写代码（受限环境 + 审计日志）
+# 工具 4：execute_code —— 兜底执行模型/用户自写代码（Docker 沙箱 + 审计日志）
 # ---------------------------------------------------------------------------
-_SAFE_BUILTINS = {
-    "print": print, "len": len, "range": range, "enumerate": enumerate, "zip": zip,
-    "list": list, "dict": dict, "set": set, "tuple": tuple, "str": str, "int": int,
-    "float": float, "bool": bool, "min": min, "max": max, "sum": sum, "abs": abs,
-    "round": round, "sorted": sorted, "isinstance": isinstance, "getattr": getattr,
-    "hasattr": hasattr, "Exception": Exception, "ValueError": ValueError,
-}
+def _docker_available() -> bool:
+    """检测本机 Docker 守护进程是否可用。"""
+    import subprocess  # noqa: E402
+    try:
+        r = subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"],
+                           capture_output=True, timeout=15)
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _ensure_sandbox_image() -> tuple:
+    """确保沙箱镜像存在：缺失则按 docker/sandbox.Dockerfile 自动构建。
+
+    返回 (ok, message)。
+    """
+    import subprocess  # noqa: E402
+    from app import config
+
+    r = subprocess.run(["docker", "image", "inspect", config.SANDBOX_IMAGE],
+                       capture_output=True, timeout=30)
+    if r.returncode == 0:
+        return True, "镜像已存在"
+
+    dockerfile_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "docker"))
+    if not os.path.exists(os.path.join(dockerfile_dir, "sandbox.Dockerfile")):
+        return False, f"沙箱镜像 {config.SANDBOX_IMAGE} 不存在，且找不到 {dockerfile_dir}\\sandbox.Dockerfile"
+
+    emit("preprocess_log", {"message": f"沙箱镜像 {config.SANDBOX_IMAGE} 不存在，开始自动构建（首次约需几分钟）"})
+    try:
+        r = subprocess.run(["docker", "build", "-t", config.SANDBOX_IMAGE, dockerfile_dir],
+                           capture_output=True, text=True, timeout=1800)
+    except subprocess.TimeoutExpired:
+        return False, "沙箱镜像构建超时（>30 分钟）"
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or "").strip()[-800:]
+        return False, f"沙箱镜像构建失败：{tail}"
+    return True, "镜像构建成功"
+
+
+def _sandbox_script(code: str) -> str:
+    """生成容器内执行的 wrapper 脚本：读 /data/rna.h5ad -> exec 用户代码 -> 写回 /output。"""
+    return f'''"""RNAgent 沙箱执行脚本（主进程生成，容器内运行）。"""
+import contextlib
+import io
+import json
+import traceback
+
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import anndata as ad
+from scipy import sparse
+
+adata = sc.read_h5ad("/data/rna.h5ad")
+
+buf = io.StringIO()
+error = None
+try:
+    with contextlib.redirect_stdout(buf):
+        exec({code!r}, {{
+            "np": np, "pd": pd, "sc": sc, "ad": ad, "sparse": sparse,
+            "adata": adata, "outdir": "/output",
+        }})
+except Exception:
+    error = traceback.format_exc()
+
+try:
+    adata.write_h5ad("/output/rna.h5ad")
+except Exception as e:
+    error = (error or "") + "\\n[sandbox] 写回 rna.h5ad 失败: " + repr(e)
+
+with open("/output/result.json", "w", encoding="utf-8") as f:
+    json.dump({{"error": error, "stdout": buf.getvalue()}}, f, ensure_ascii=False)
+
+print(buf.getvalue())
+'''
 
 
 def execute_code(code: str, adata, outdir: str) -> dict:
-    """在受限环境中执行自写代码（用于兜底处理命名歧义/多级拆分/格式转换等）。
+    """在 Docker 沙箱中执行自写代码（兜底处理命名歧义/多级拆分/格式转换等）。
 
-    受限策略：仅暴露白名单 builtins 与限定模块（numpy/pandas/scanpy/anndata/scipy），
-    禁止网络、文件系统以外路径访问等危险操作；执行内容与结果写入审计日志。
+    安全约束（对齐架构方案 14.4）：
+      - 独立容器进程，跑完即销毁，崩溃不影响主进程
+      - 断网（--network none）、根文件系统只读（--read-only）
+      - 非 root（--user 1000:1000）、丢弃全部 capabilities、no-new-privileges
+      - 内存 / CPU 限额；超时强杀容器
+      - 数据只读挂载（/data:ro），仅 /output 可写
+    策略：Docker 不可用时拒绝执行（不回退进程内 exec），返回 error。
     """
-    import numpy as np  # noqa: E402
-    import pandas as pd  # noqa: E402
-    import scanpy as sc  # noqa: E402
-    import anndata as ad  # noqa: E402
-    from scipy import sparse  # noqa: E402
+    import shutil  # noqa: E402
+    import subprocess  # noqa: E402
+    import tempfile  # noqa: E402
+    import uuid  # noqa: E402
 
-    sandbox = {
-        "__builtins__": _SAFE_BUILTINS,
-        "np": np, "pd": pd, "sc": sc, "ad": ad, "sparse": sparse,
-        "adata": adata, "outdir": outdir,
-    }
-    audit = {"code": code, "stdout": "", "error": None, "time": datetime.now().isoformat()}
+    from app import config
+
+    audit = {"code": code, "stdout": "", "error": None,
+             "time": datetime.now().isoformat(), "mode": "docker"}
+
+    def _fail(msg: str) -> dict:
+        audit["error"] = msg
+        emit("preprocess_log", {"message": f"execute_code 未执行：{msg}"})
+        return {"status": "error", "error": msg, "audit": _json_safe(audit)}
+
+    # 1) Docker 可用性：不可用直接拒绝执行
+    if not _docker_available():
+        return _fail("Docker 不可用（未安装或守护进程未运行），沙箱模式拒绝执行代码")
+
+    # 2) 沙箱镜像：缺失则自动构建
+    ok, msg = _ensure_sandbox_image()
+    if not ok:
+        return _fail(msg)
+
+    container = f"rna-sandbox-{uuid.uuid4().hex[:8]}"
+    tmp = tempfile.mkdtemp(prefix="rna_sandbox_")
     try:
-        import io
-        import contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            exec(compile(code, "<agent_code>", "exec"), sandbox, sandbox)
-        audit["stdout"] = buf.getvalue()
-        new_adata = sandbox.get("adata", adata)
-        audit["result"] = f"执行成功，输出 adata shape={getattr(new_adata, 'shape', 'N/A')}"
+        import scanpy as sc  # noqa: E402
+
+        in_dir = os.path.join(tmp, "data")
+        out_dir = os.path.join(tmp, "out")
+        os.makedirs(in_dir)
+        os.makedirs(out_dir)
+        adata.write_h5ad(os.path.join(in_dir, "rna.h5ad"))
+
+        script_path = os.path.join(tmp, "run.py")
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(_sandbox_script(code))
+
+        cmd = [
+            "docker", "run", "--name", container,
+            "--network", "none",           # 断网
+            "--read-only",                  # 根文件系统只读
+            "--tmpfs", "/tmp:size=100m",    # /tmp 可写（运行时缓存）
+            "--user", "1000:1000",          # 非 root
+            "--cap-drop", "ALL",            # 丢弃全部 capabilities
+            "--security-opt", "no-new-privileges",
+            "--memory", f"{config.SANDBOX_MEM_MB}m",
+            "--cpus", str(config.SANDBOX_CPUS),
+            "-v", f"{in_dir}:/data:ro",     # 输入数据只读
+            "-v", f"{out_dir}:/output:rw",  # 仅输出目录可写
+            "-v", f"{script_path}:/sandbox/run.py:ro",
+            config.SANDBOX_IMAGE, "python", "/sandbox/run.py",
+        ]
+
+        # 3) 执行（超时强杀）
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=config.SANDBOX_TIMEOUT)
+            audit["stdout"] = (r.stdout or "")[-4000:]
+            exit_code = r.returncode
+        except subprocess.TimeoutExpired:
+            subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=30)
+            return _fail(f"沙箱执行超时（>{config.SANDBOX_TIMEOUT}s），容器 {container} 已强杀")
+
+        # 4) 读取沙箱结果
+        result_path = os.path.join(out_dir, "result.json")
+        sandbox_err = None
+        if os.path.exists(result_path):
+            try:
+                with open(result_path, encoding="utf-8") as f:
+                    sandbox_err = json.load(f).get("error")
+            except Exception:
+                sandbox_err = "沙箱 result.json 解析失败"
+
+        if exit_code != 0:
+            return _fail(f"沙箱容器退出码 {exit_code}: {(r.stderr or '').strip()[-800:]}")
+        if sandbox_err:
+            audit["stdout"] = audit["stdout"] or ""
+            audit["error"] = sandbox_err
+            return {"status": "error", "error": sandbox_err.splitlines()[-1] if sandbox_err else "sandbox error",
+                    "audit": _json_safe(audit)}
+
+        new_path = os.path.join(out_dir, "rna.h5ad")
+        if os.path.exists(new_path):
+            new_adata = sc.read_h5ad(new_path)
+        else:
+            new_adata = adata  # 代码未改动数据（如纯查看类脚本）
+        audit["result"] = f"沙箱执行成功，adata shape={getattr(new_adata, 'shape', 'N/A')}"
         return {"status": "ok", "adata": new_adata, "audit": _json_safe(audit)}
     except Exception as e:
-        audit["error"] = _err_info(e)
-        return {"status": "error", "error": str(e), "audit": _json_safe(audit)}
+        return _fail(f"沙箱执行异常：{_err_info(e)}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

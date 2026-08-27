@@ -400,6 +400,10 @@ python server.py
 | `MODEL_EPOCHS` | `1` | 模型训练轮数 |
 | `MODEL_BATCH_SIZE` | 自动 | 根据 GPU / 数据规模自动决定 |
 | `SCLINFORMER_DIR` | `../../model/scLinformer-main` | scLinformer 源码目录 |
+| `SANDBOX_IMAGE` | `rna-sandbox:latest` | `execute_code` 沙箱镜像（首次运行按 `docker/sandbox.Dockerfile` 自动构建） |
+| `SANDBOX_TIMEOUT` | `300` | 沙箱执行超时（秒），超时强杀容器 |
+| `SANDBOX_MEM_MB` | `4096` | 沙箱内存上限（MB） |
+| `SANDBOX_CPUS` | `2` | 沙箱 CPU 限额 |
 
 ---
 
@@ -474,12 +478,12 @@ z-newRnagent/
 - [x] AI Assistant Function Calling
 - [x] SSE 实时进度推送
 - [x] MySQL 数据持久化
+- [x] `execute_code` Docker 沙箱隔离（断网、只读根文件系统、非 root、资源限额、超时强杀）
 
 ## 🚧 下一步
 
 - [ ] Redis Checkpoint 与断点续跑
 - [ ] Langfuse 全链路 Trace
-- [ ] `execute_code` Docker 沙箱隔离
 - [ ] Vue 3 前端迁移
 
 ---
