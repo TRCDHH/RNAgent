@@ -14,9 +14,9 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![scRNA-seq](https://img.shields.io/badge/Domain-scRNA--seq-8E44AD?style=flat-square)](https://en.wikipedia.org/wiki/Single-cell_sequencing)
 
-[快速开始](#-快速开始) · [系统架构](#-系统架构) · [流水线详解](#-流水线详解) · [API 文档](#-api-文档) · [Roadmap](#-roadmap)
+**系统架构**
 
----
+<img src="imgs/a.png" alt="RNAgent 系统架构图" width="880"/>
 
 从一份原始的单细胞 RNA 测序数据，到一份可解读的完整分析报告 —— 全程由 Agent 自主决策：
 
@@ -28,107 +28,17 @@
 
 ## 📑 目录
 
-- [✨ 核心特性](#-核心特性)
-- [🏗️ 系统架构](#-系统架构)
 - [🔄 流水线详解](#-流水线详解)
 - [🚀 快速开始](#-快速开始)
 - [⚙️ 配置项](#️-配置项)
 - [📡 API 文档](#-api-文档)
 - [📦 任务产物清单](#-任务产物清单)
 - [🧠 Skill 系统](#-skill-系统)
+- [⭐ 核心特性](#-核心特性)
 - [📁 项目结构](#-项目结构)
 - [🗺️ Roadmap](#-roadmap)
 
 ---
-
-## ✨ 核心特性
-
-### 1. 三阶段 Agent 流水线
-
-数据预处理、模型运行、结果分析三个阶段由 LangGraph `StateGraph` 编排，阶段间以结构化产物衔接，失败自动路由至错误处理节点，全程状态可追溯。
-
-### 2. 判定契约 + 三级分流修复
-
-预处理阶段不是简单的格式转换，而是一套「先诊断、再修复」的智能流程：
-
-- **判定契约**：8 项检查（X 存在性 / 原始计数 / cell_type / batch / 基因名唯一性 / 数值合法性 / 规模下限 / universal 基因覆盖率），逐项输出 `PASS / WARNING / FAIL` + 证据 + 建议动作
-- **三级分流修复**：
-  1. 简单同义列 → `rename_column`（如 `cell.type` → `cell_type`）
-  2. 复杂情况 → `execute_code` 受限沙箱兜底（多级列拆分、格式转换、命名歧义）
-  3. 无法判定 → 停下询问，绝不瞎猜
-- **核心原则**：*先确认原始计数，再谈其它* —— 避免模型内部二次归一化导致数据失真
-
-### 3. 智能参数决策
-
-模型运行阶段像一名「只负责传参和执行」的 Agent，基于上一步产物 + 本机环境自动决策：
-
-| 参数 | 决策依据 |
-|------|----------|
-| `use_batch` | 预处理产物 `obs` 是否含 `batch` 列（缺失列会导致模型崩溃） |
-| `use_cell_type` | `obs` 是否含 `cell_type` 列 |
-| `batch_size` | 显存大小 + 细胞数查表（无 GPU→32，≥24GB→512，小样本自动收窄） |
-| `use_universal_model` | 固定 `False` |
-| 其他 | 沿用 scLinformer `train.py` 默认值 |
-
-### 4. 全链路可观测
-
-每个阶段的关键动作实时推送（SSE），前端时间线逐条展示；事件同步落盘 `runtime/events.jsonl` 供审计。
-
-### 5. DeepSeek 驱动的报告与对话
-
-- **结果分析**：汇总两阶段全部产物，由 DeepSeek 生成专业 HTML 分析报告（未配置 LLM 时本地模板兜底）
-- **AI 助手**：基于 function calling 查询真实数据集 / 任务状态 / 评测指标，不编造数据
-
-### 6. Skill 系统（渐进式披露）
-
-每个阶段的决策知识沉淀为 `SKILL.md`（判定契约、参数查表、指标解读规范），常驻只暴露 name + description，用到才加载全文 —— 省 token，可维护。
-
----
-
-## 🏗️ 系统架构
-
-```mermaid
-flowchart TB
-    subgraph FE["🖥️ 前端门户（原生 HTML/JS）"]
-        UI["数据集 / 任务管理 · 阶段进度 · 实时日志时间线 · AI 对话"]
-    end
-
-    subgraph BE["⚙️ FastAPI 后端"]
-        REST["REST API"]
-        SSE["SSE 事件流"]
-        STATIC["/output 静态托管"]
-    end
-
-    subgraph LG["🤖 LangGraph StateGraph"]
-        direction LR
-        P["① 数据预处理<br/>判定 + 修复 + QC"] --> T["② 模型运行<br/>参数决策 + 训练评测"]
-        T --> A["③ 结果分析<br/>汇总产物 → HTML 报告"]
-        P -. 失败 .-> E["handle_error"]
-        T -. 失败 .-> E
-        A -. 失败 .-> E
-    end
-
-    subgraph TOOLS["🧰 本地工具层"]
-        PT["preprocess_tools<br/>load_data / judge /<br/>rename_column / execute_code"]
-        MT["model_tools<br/>inspect_environment /<br/>resolve_model_config / run_model"]
-        RT["report_tools<br/>collect_report_context /<br/>generate_report_html"]
-    end
-
-    subgraph EXT["🌐 外部依赖"]
-        LLM["DeepSeek<br/>(OpenAI 兼容)"]
-        DB[("MySQL<br/>rnagent")]
-        MODEL["scLinformer<br/>编码器 · 解码器 · 判别器"]
-    end
-
-    UI -->|REST| REST
-    REST -->|后台线程 invoke| LG
-    LG -->|emit 事件| SSE -->|实时推送| UI
-    LG --> PT & MT & RT
-    RT --> LLM
-    REST --> DB
-    MT --> MODEL
-    A -->|report.html| STATIC -->|查看结果| UI
-```
 
 **分层职责**：
 
@@ -147,18 +57,9 @@ flowchart TB
 
 ### 阶段一：数据预处理
 
-```mermaid
-flowchart LR
-    A["load_data<br/>h5ad / 10x mtx / csv"] --> B["judge<br/>8 项判定契约"]
-    B --> C{"三级分流修复"}
-    C -->|"同义列"| D["rename_column"]
-    C -->|"多级拆分 / 歧义"| E["execute_code<br/>受限沙箱"]
-    D --> F["re-judge 直至 PASS"]
-    E --> F
-    F --> G["QC + 组成分析 + 绘图"]
-    G --> H["生成「数据处理结果分析」"]
-    H --> I["save_dataset<br/>processed_rna.h5ad"]
-```
+<p align="center">
+  <img src="imgs/b.png" alt="数据预处理流程图" width="880"/>
+</p>
 
 典型场景（自动处理）：**10x 输出目录 + 含 `cell.type` 与 `Sample` 的 annotations.csv**
 
@@ -295,6 +196,19 @@ runtime/task/{task_id}/
 | `h5ad-conversion` | 数据格式转换指南 |
 
 `SkillLibrary.disclose()` 常驻只暴露名称与描述；`load(name)` 按需加载全文 —— 渐进式披露，节省 token。
+
+---
+
+## ⭐ 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **三阶段 Agent 流水线** | LangGraph StateGraph 编排，结构化产物衔接，失败自动路由错误处理，全程可追溯 |
+| **判定契约 + 三级分流修复** | 8 项检查逐项 PASS/WARNING/FAIL；同义列 `rename_column`，复杂情况 `execute_code` 沙箱兜底，有歧义停下询问。核心原则：*先确认原始计数，再谈其它*，避免二次归一化失真 |
+| **智能参数决策** | `use_batch` / `use_cell_type` 由 obs 列决定；`batch_size` 按显存+数据量查表；`use_universal_model` 固定 False；其余沿用 train.py 默认 |
+| **全链路可观测** | 阶段动作 SSE 实时推送，前端时间线逐条展示，事件落盘 `events.jsonl` 供审计 |
+| **DeepSeek 报告与对话** | 汇总两阶段产物生成专业 HTML 报告（本地模板兜底）；AI 助手 function calling 查真实指标，不编造数据 |
+| **Skill 渐进式披露** | 决策知识沉淀 SKILL.md，常驻只暴露摘要，用到才加载全文 |
 
 ---
 
