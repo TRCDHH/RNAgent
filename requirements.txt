@@ -26,3 +26,6 @@ torch>=2.0
 tqdm
 leidenalg
 igraph
+
+# 训练子进程资源监控（可选，未安装时自动降级为存活/进度监控）
+psutil>=5.9

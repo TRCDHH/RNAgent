@@ -181,6 +181,130 @@ def _train_and_eval(adata, output_dir: str, model_config: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 子进程训练 + 父进程监控：训练崩溃不连累主服务，进度实时可见
+# ---------------------------------------------------------------------------
+def _drain_lines(path: str, start: int, encoding: str = "utf-8") -> tuple:
+    """增量读取文件行，返回 (新的行数, 新增行列表)。"""
+    if not os.path.exists(path):
+        return start, []
+    with open(path, encoding=encoding, errors="replace") as f:
+        lines = f.readlines()
+    new = [ln.rstrip("\n") for ln in lines[start:] if ln.strip()]
+    return len(lines), new
+
+
+def _console_safe(text: str) -> str:
+    """按当前控制台编码过滤不可打印字符，避免 GBK 控制台 UnicodeEncodeError。"""
+    enc = (sys.stdout.encoding or "utf-8")
+    try:
+        return text.encode(enc, "ignore").decode(enc)
+    except Exception:
+        return text.encode("ascii", "ignore").decode()
+
+
+def _train_and_eval_monitored(rna_path: str, output_dir: str, model_config: dict) -> dict:
+    """在独立子进程中执行 _train_and_eval，父进程轮询监控。
+
+    - 子进程（app.tools.train_worker）跑训练，崩溃 / OOM / 段错误不影响主服务；
+    - 父进程轮询 progress.jsonl 转发生命周期事件、尾随 train_stdout.log 转发模型
+      自身输出（epoch 进度等），每 5s 用 psutil 上报子进程 CPU / 内存；
+    - 结束后读取 train_result.json 汇总返回；异常则抛出含堆栈的 RuntimeError。
+    """
+    import json  # noqa: E402
+    import subprocess  # noqa: E402
+    import time  # noqa: E402
+
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    job_path = os.path.join(output_dir, "train_job.json")
+    prog_path = os.path.join(output_dir, "progress.jsonl")
+    log_path = os.path.join(output_dir, "train_stdout.log")
+    result_path = os.path.join(output_dir, "train_result.json")
+    for stale in (prog_path, result_path):
+        if os.path.exists(stale):
+            os.remove(stale)
+
+    with open(job_path, "w", encoding="utf-8") as f:
+        json.dump({"rna_path": rna_path, "output_dir": output_dir,
+                   "model_config": _json_safe(model_config)}, f, ensure_ascii=False)
+
+    with open(log_path, "w", encoding="utf-8") as logf:
+        # PYTHONIOENCODING=utf-8：统一子进程 stdout/stderr 编码，避免 GBK 乱码
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "app.tools.train_worker", job_path],
+            cwd=repo_root, stdout=logf, stderr=subprocess.STDOUT, env=env,
+        )
+    emit("training_log", {"message": f"训练子进程已启动（pid={proc.pid}），父进程监控中"})
+
+    # psutil 可选：装了才有资源监控，没装只跟踪存活与进度
+    child = None
+    try:
+        import psutil  # noqa: E402
+        child = psutil.Process(proc.pid)
+    except Exception:
+        pass
+
+    t0 = time.time()
+    last_prog = 0
+    last_log = 0
+    last_mon = 0.0
+    while proc.poll() is None:
+        # 1) 子进程生命周期里程碑（progress.jsonl）
+        last_prog, new_progs = _drain_lines(prog_path, last_prog)
+        for ln in new_progs:
+            try:
+                rec = json.loads(ln)
+                emit("training_log", {k: v for k, v in rec.items() if k != "event"})
+            except ValueError:
+                pass
+        # 2) 模型自身 stdout（跳过 emit 的事件行，避免重复）
+        last_log, new_logs = _drain_lines(log_path, last_log)
+        for ln in new_logs:
+            if not ln.startswith("[event]"):
+                emit("training_log", {"message": _console_safe(ln)})
+        # 3) 资源监控：每 5s 上报子进程 CPU / 内存
+        now = time.time()
+        if child is not None and now - last_mon >= 5:
+            last_mon = now
+            try:
+                with child.oneshot():
+                    emit("training_monitor", {
+                        "elapsed_s": round(now - t0, 1),
+                        "cpu_percent": child.cpu_percent(interval=0),
+                        "mem_mb": round(child.memory_info().rss / 1048576, 1),
+                    })
+            except Exception:
+                child = None  # 子进程刚退出等场景，停止资源监控
+        time.sleep(1)
+
+    # 收尾：再读一次，防止退出与轮询之间的漏读
+    last_prog, new_progs = _drain_lines(prog_path, last_prog)
+    for ln in new_progs:
+        try:
+            rec = json.loads(ln)
+            emit("training_log", {k: v for k, v in rec.items() if k != "event"})
+        except ValueError:
+            pass
+    last_log, new_logs = _drain_lines(log_path, last_log)
+    for ln in new_logs:
+        if not ln.startswith("[event]"):
+            emit("training_log", {"message": _console_safe(ln)})
+
+    result = None
+    if os.path.exists(result_path):
+        with open(result_path, encoding="utf-8") as f:
+            result = json.load(f)
+
+    if proc.returncode != 0:
+        err = (result or {}).get("error") or f"训练子进程异常退出（code={proc.returncode}），详见 {log_path}"
+        raise RuntimeError(f"训练子进程失败：{err}")
+    if not result or result.get("status") != "success":
+        raise RuntimeError((result or {}).get("error", "训练子进程未返回结果"))
+    emit("training_log", {"message": "训练子进程正常结束，产物已回收"})
+    return result
+
+
+# ---------------------------------------------------------------------------
 # 工具 3：run_model —— 按给定 config 执行训练（Agent 兜底 / 手动调用）
 # ---------------------------------------------------------------------------
 def run_model(rna_path: str, output_dir: str, model_config: dict) -> dict:
@@ -218,8 +342,8 @@ def run_model_stage(task_id: int, output_dir: str, preprocess: dict = None) -> d
                    f"batch_size={model_config['batch_size']}（显存 {env.get('vram_mb')}MB, n_cells={n_cells}）"
     })
 
-    # 3) 训练 + 评测
-    result = _train_and_eval(adata, output_dir, model_config)
+    # 3) 子进程训练 + 评测（父进程监控进度与资源）
+    result = _train_and_eval_monitored(rna_path, output_dir, model_config)
     result.update({
         "config": _json_safe(model_config),
         "env": env,
