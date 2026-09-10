@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{PAGE_TITLE}}</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0;
+    background: #eef2f7;
+    font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+    color: #1f2a37;
+    line-height: 1.65;
+    font-size: 15px;
+  }
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 32px 22px 64px;
+  }
+  header.hero {
+    background: linear-gradient(135deg, #123a63 0%, #1c5f96 55%, #2a86c4 100%);
+    color: #fff;
+    border-radius: 16px;
+    padding: 34px 36px;
+    box-shadow: 0 10px 28px rgba(18, 58, 99, 0.28);
+  }
+  header.hero h1 {
+    margin: 0 0 8px;
+    font-size: 28px;
+    letter-spacing: 0.5px;
+  }
+  header.hero p {
+    margin: 0;
+    opacity: 0.9;
+    font-size: 15px;
+  }
+  .hero-meta {
+    margin-top: 18px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .chip {
+    background: rgba(255, 255, 255, 0.16);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 999px;
+    padding: 5px 14px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  section {
+    background: #fff;
+    border-radius: 14px;
+    padding: 26px 30px;
+    margin-top: 22px;
+    box-shadow: 0 3px 14px rgba(28, 53, 84, 0.07);
+  }
+  h2 {
+    font-size: 19px;
+    margin: 0 0 18px;
+    padding-left: 12px;
+    border-left: 5px solid #2a86c4;
+    color: #123a63;
+    line-height: 1.3;
+  }
+  h3 {
+    font-size: 15.5px;
+    color: #1c5f96;
+    margin: 22px 0 10px;
+  }
+  .grid {
+    display: grid;
+    gap: 16px;
+  }
+  .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  @media (max-width: 860px) {
+    .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  }
+  .stat {
+    background: #f7fafd;
+    border: 1px solid #dfe9f3;
+    border-radius: 11px;
+    padding: 15px 17px;
+  }
+  .stat .label {
+    font-size: 12.5px;
+    color: #5c7188;
+    letter-spacing: 0.4px;
+    margin-bottom: 6px;
+  }
+  .stat .value {
+    font-size: 22px;
+    font-weight: 700;
+    color: #123a63;
+    word-break: break-all;
+  }
+  .stat .value.small { font-size: 16px; font-weight: 600; }
+  .stat .note {
+    font-size: 12px;
+    color: #7b8ea3;
+    margin-top: 4px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    margin-top: 6px;
+  }
+  thead th {
+    background: #eaf3fb;
+    color: #123a63;
+    text-align: left;
+    padding: 10px 12px;
+    font-weight: 600;
+    border-bottom: 2px solid #cfe2f2;
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 9px 12px;
+    border-bottom: 1px solid #eef3f8;
+  }
+  tbody tr:hover { background: #f6fafd; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .metric-row {
+    display: grid;
+    grid-template-columns: 150px 1fr 90px;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px dashed #e4ecf4;
+  }
+  .metric-row:last-child { border-bottom: none; }
+  .metric-name { font-weight: 600; color: #1f2a37; font-size: 14px; }
+  .bar-track {
+    background: #eef3f8;
+    border-radius: 999px;
+    height: 12px;
+    overflow: hidden;
+    position: relative;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #2a86c4, #123a63);
+  }
+  .bar-fill.warn { background: linear-gradient(90deg, #e8a33d, #c9772b); }
+  .bar-fill.bad { background: linear-gradient(90deg, #e2705f, #b53f2f); }
+  .bar-fill.good { background: linear-gradient(90deg, #35a86b, #1e7a4b); }
+  .metric-val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; color: #123a63; }
+  .badge {
+    display: inline-block;
+    border-radius: 6px;
+    padding: 2px 9px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.6;
+  }
+  .badge-pass { background: #e2f5ea; color: #1e7a4b; border: 1px solid #bcdfca; }
+  .badge-skip { background: #f1f3f6; color: #6b7a8c; border: 1px solid #dde3ea; }
+  .badge-high { background: #e2f5ea; color: #1e7a4b; border: 1px solid #bcdfca; }
+  .badge-mid  { background: #fdf3e0; color: #a6702a; border: 1px solid #f0dcb8; }
+  .badge-low  { background: #fdeceb; color: #b53f2f; border: 1px solid #f3cfcb; }
+  .hint {
+    background: #f2f8fe;
+    border-left: 4px solid #2a86c4;
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px;
+    font-size: 13.5px;
+    color: #2c4056;
+    margin-top: 14px;
+  }
+  .warn-box {
+    background: #fff9ef;
+    border-left: 4px solid #e8a33d;
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px;
+    font-size: 13.5px;
+    color: #6b4a15;
+    margin-top: 14px;
+  }
+  ul.clean { margin: 8px 0 0; padding-left: 20px; }
+  ul.clean li { margin-bottom: 7px; }
+  code {
+    background: #eef3f8;
+    border: 1px solid #dfe9f3;
+    border-radius: 5px;
+    padding: 1px 6px;
+    font-family: "Consolas", "Menlo", monospace;
+    font-size: 13px;
+    color: #1c5f96;
+    word-break: break-all;
+  }
+  .img-wrap {
+    background: #f7fafd;
+    border: 1px solid #dfe9f3;
+    border-radius: 12px;
+    padding: 14px;
+    text-align: center;
+  }
+  .img-wrap img {
+    max-width: 100%;
+    border-radius: 8px;
+    display: block;
+    margin: 0 auto;
+    background: #fff;
+  }
+  .img-caption {
+    margin-top: 10px;
+    font-size: 13px;
+    color: #5c7188;
+  }
+  .tag-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+  .tag {
+    font-size: 12.5px;
+    background: #eef3f8;
+    border: 1px solid #dbe6f0;
+    color: #40566e;
+    border-radius: 6px;
+    padding: 3px 9px;
+  }
+  footer {
+    text-align: center;
+    color: #7b8ea3;
+    font-size: 12.5px;
+    margin-top: 28px;
+  }
+  .conclusion-list li strong { color: #123a63; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="hero">
+    <h1>{{HERO_TITLE}}</h1>
+    <p>{{HERO_SUBTITLE}}</p>
+    <div class="hero-meta">
+      {{CHIPS}}
+    </div>
+  </header>
+
+  <!-- 1. 模型评测（核心结果前置，读者先看结论再看依据） -->
+  <section>
+    <h2>一、模型评测</h2>
+
+    <h3>1.1 综合指标（metrics.summary）</h3>
+    {{SUMMARY_BARS}}
+
+    <h3>1.2 逐项解读</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>指标</th>
+          <th class="num">数值</th>
+          <th>解读方向</th>
+          <th>本次表现</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{METRIC_ROWS}}
+      </tbody>
+    </table>
+
+    {{SUMMARY_WARN}}
+
+    <h3>1.3 不同聚类分辨率下的表现（metrics.cluster）</h3>
+    <table>
+      <thead>
+        <tr>
+          <th class="num">resolution</th>
+          <th class="num">ARI</th>
+          <th class="num">AMI</th>
+          <th class="num">NMI</th>
+          <th class="num">HOM</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{CLUSTER_ROWS}}
+      </tbody>
+    </table>
+    {{CLUSTER_HINT}}
+
+    <h3>1.4 批次整合指标（metrics.batch）</h3>
+    <div class="grid grid-3">
+      {{BATCH_STATS}}
+    </div>
+    {{BATCH_HINT}}
+
+    <h3>1.5 UMAP 可视化</h3>
+    <div class="grid grid-2">
+      {{UMAP_IMAGES}}
+    </div>
+    {{UMAP_HINT}}
+  </section>
+
+  <!-- 2. 模型 -->
+  <section>
+    <h2>二、所用模型与关键参数</h2>
+    <p>
+      <strong>{{MODEL_NAME}}</strong> —— {{MODEL_DESC}}
+    </p>
+    <div class="grid grid-3" style="margin-top:16px;">
+      {{MODEL_PARAMS}}
+    </div>
+
+    <h3>模型能力与产物</h3>
+    <div class="grid grid-2">
+      <div>
+        <table>
+          <thead>
+            <tr><th>能力项</th><th>取值</th></tr>
+          </thead>
+          <tbody>
+            {{CAPABILITY_ROWS}}
+          </tbody>
+        </table>
+      </div>
+      <div class="stat">
+        <div class="label">产出文件（artifacts）</div>
+        <div class="tag-list">
+          {{ARTIFACT_TAGS}}
+        </div>
+        <div class="note" style="margin-top:10px;">
+          {{ARTIFACT_PATHS}}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. 数据集 -->
+  <section>
+    <h2>三、数据集概览</h2>
+    <div class="grid grid-4">
+      {{DATASET_STATS}}
+    </div>
+    {{DATASET_HINT}}
+
+    <h3>元数据字段（obs_columns，共 {{OBS_COUNT}} 项）</h3>
+    <div class="tag-list">
+      {{OBS_TAGS}}
+    </div>
+  </section>
+
+  <!-- 4. 数据状况 -->
+  <section>
+    <h2>四、数据状况与判定结果</h2>
+    <div class="grid grid-3">
+      {{CONDITION_STATS}}
+    </div>
+    {{CONDITION_HINT}}
+  </section>
+
+  <!-- 5. 训练配置 -->
+  <section>
+    <h2>五、训练配置与资源占用</h2>
+    <h3>训练超参数</h3>
+    <table>
+      <thead>
+        <tr><th>配置项</th><th>取值</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        {{TRAIN_ROWS}}
+      </tbody>
+    </table>
+
+    <h3>运行环境与资源</h3>
+    <div class="grid grid-4">
+      {{ENV_STATS}}
+    </div>
+    {{ENV_HINT}}
+  </section>
+
+  <!-- 6. 结论与建议 -->
+  <section>
+    <h2>六、结论与建议</h2>
+
+    <h3>结论</h3>
+    <ul class="clean conclusion-list">
+      {{CONCLUSION_LIST}}
+    </ul>
+
+    <h3>建议</h3>
+    <ul class="clean conclusion-list">
+      {{SUGGESTION_LIST}}
+    </ul>
+  </section>
+
+  <footer>
+    {{FOOTER}}
+  </footer>
+
+</div>
+</body>
+</html>

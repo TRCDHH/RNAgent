@@ -152,6 +152,13 @@ class SkillLibrary:
     def names(self) -> List[str]:
         return list(self._skills.keys())
 
+    def load_asset(self, skill_name: str, filename: str) -> str:
+        """读取技能目录下的附加资源（如报告模板 report_template.html）；不存在返回空串。"""
+        path = REGISTRY_DIR / skill_name / filename
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
+
     # ---------------- 模型技能 ----------------
     def load_model(self, key: str):
         """返回 ModelSkill（含机器可读的默认值/决策表与人读 SOP）；不存在返回 None。"""

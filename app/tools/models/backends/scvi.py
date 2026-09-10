@@ -186,8 +186,9 @@ class ScVIBackend(ModelBackend):
         emit("training_log", {"message": f"得到低维表征：{latent.shape[0]} 细胞 × {latent.shape[1]} 维"})
 
         model_dir = os.path.join(output_dir, "model", "scvi")
-        os.makedirs(model_dir, exist_ok=True)
-        model.save(model_dir)
+        # scvi 的 save() 要求目标目录不存在（存在会报错），overwrite=True 同时支持同目录重跑
+        os.makedirs(os.path.dirname(model_dir), exist_ok=True)
+        model.save(model_dir, overwrite=True)
 
         return {
             "epochs": cfg["max_epochs"],

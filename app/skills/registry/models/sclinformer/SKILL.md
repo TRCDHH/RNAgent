@@ -4,7 +4,7 @@ type: model
 display_name: scLinformer
 description: 基于 Transformer 的自编码模型，模型内部完成归一化与高变基因筛选，适用于通用单细胞表征学习
 params:
-  epochs: 1
+  epochs: 100
   batch_size: auto
   use_batch: auto
   use_cell_type: auto

@@ -431,7 +431,7 @@ python server.py
 | `LLM_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口地址 |
 | `LLM_API_KEY` | — | DeepSeek API Key |
 | `LLM_MODEL` | `deepseek-v4-flash` | LLM 模型名称 |
-| `MODEL_EPOCHS` | `1` | 模型训练轮数 |
+| `MODEL_EPOCHS` | `100` | 模型训练轮数（各模型 SKILL.md 可单独覆盖） |
 | `MODEL_BATCH_SIZE` | 自动 | 根据 GPU / 数据规模自动决定 |
 | `DEFAULT_MODEL` | `sclinformer` | 默认分析模型（可选 `sclinformer` / `scvi`） |
 | `{模型KEY}_{参数名}` | 见各模型 SKILL.md | 覆盖单个模型参数，如 `SCVI_MAX_EPOCHS=200` |

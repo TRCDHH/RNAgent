@@ -10,8 +10,8 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 # ---- 模型运行（与具体模型无关）----
 # 默认模型（必须是 app/tools/models/registry.py 中已注册的模型 key）
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "sclinformer")
-# 训练轮数（train.py 里演示用 epochs=1；真实训练可调大后重启）
-MODEL_EPOCHS = int(os.environ.get("MODEL_EPOCHS", "1"))
+# 训练轮数（默认 100；演示想快速出结果可设小，如 MODEL_EPOCHS=1）
+MODEL_EPOCHS = int(os.environ.get("MODEL_EPOCHS", "100"))
 # 是否显式设置过 MODEL_EPOCHS（显式设置时优先于模型 SKILL.md 中声明的默认值）
 MODEL_EPOCHS_EXPLICIT = os.environ.get("MODEL_EPOCHS") is not None
 # 强制指定 batch_size（None=按显存+数据量自动判断；OOM 时可用它手动调小）
