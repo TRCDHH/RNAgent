@@ -4,6 +4,10 @@
 - 打印 / jsonl：留档，出 bug 可追踪；
 - 内存缓冲（BUFFERS）：供后端 SSE 实时推送给前端，实现「中间过程用户可见」。
 
+**events.jsonl 是日志唯一的持久化来源**：内存 BUFFERS 与 stdout 都随进程消失，
+而 task 表的 process.events 只在流水线收尾时写一次（进程中途重启就永远为空）。
+因此恢复历史日志请用 `load_events(task_id)`，它直接从该文件按增量索引读取。
+
 第二阶段可无缝替换为 `redis.xadd(f"task:{id}:events", ...)`。
 """
 
@@ -58,3 +62,52 @@ def snapshot(task_id) -> list:
     """返回某任务当前累积的事件列表（供 SSE 增量读取）。"""
     with _BUFFERS_LOCK:
         return list(BUFFERS.get(task_id, []))
+
+
+# 文件增量索引：task_id -> [event]；避免每次调用都全量扫描 events.jsonl
+_FILE_INDEX: dict = {}
+_FILE_OFFSET = 0
+_INDEX_LOCK = threading.Lock()
+
+
+def load_events(task_id, limit: int = None) -> list:
+    """从 runtime/events.jsonl 读回某任务的完整事件（日志的持久化来源）。
+
+    进程中途重启时内存 BUFFERS 会丢、DB 的 process.events 可能为空，
+    但该文件是追加写的，因此仍能完整恢复历史日志。
+    采用增量索引：只解析新增字节，重复调用几乎零成本。
+    """
+    global _FILE_OFFSET
+    task_id = int(task_id)
+    with _INDEX_LOCK:
+        try:
+            size = _EVENTS_FILE.stat().st_size
+        except OSError:
+            return []
+        if size < _FILE_OFFSET:            # 文件被截断/轮转 → 重建索引
+            _FILE_INDEX.clear()
+            _FILE_OFFSET = 0
+        if size > _FILE_OFFSET:
+            with open(_EVENTS_FILE, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(_FILE_OFFSET)
+                pos = _FILE_OFFSET
+                while True:
+                    line = f.readline()
+                    if not line:
+                        break
+                    if not line.endswith("\n"):   # 半行（正在写）→ 留到下次解析
+                        break
+                    pos = f.tell()
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    tid = rec.get("task_id")
+                    if tid is not None:
+                        _FILE_INDEX.setdefault(tid, []).append(rec)
+                _FILE_OFFSET = pos
+        events = _FILE_INDEX.get(task_id, [])
+        return list(events[-limit:]) if limit else list(events)

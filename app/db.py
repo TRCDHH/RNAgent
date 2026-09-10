@@ -62,12 +62,24 @@ def init_schema():
                     path VARCHAR(512),
                     model VARCHAR(32) NOT NULL DEFAULT 'sclinformer',
                     dataset_id BIGINT NULL,
-                    process TEXT,
+                    process LONGTEXT,
                     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
             # 兼容历史库：缺列时补上（MySQL 不支持 ADD COLUMN IF NOT EXISTS）
+            cur.execute(
+                """
+                SELECT DATA_TYPE AS t FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task' AND COLUMN_NAME = 'process'
+                """
+            )
+            dtype = ((cur.fetchone() or {}).get("t") or "").lower()
+            if dtype in ("text", "tinytext"):
+                # process 存的是完整事件流：TEXT 上限 64KB，长任务必然超限，
+                # 写库抛 DataError 会让收尾中断、状态永远停在 running
+                cur.execute("ALTER TABLE task MODIFY COLUMN process LONGTEXT")
+
             added = []
             for col, ddl in (
                 ("model", "ALTER TABLE task ADD COLUMN model VARCHAR(32) NOT NULL DEFAULT 'sclinformer'"),

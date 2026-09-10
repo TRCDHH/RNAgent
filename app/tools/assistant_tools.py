@@ -9,11 +9,30 @@
 import json
 import os
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
 from app import db
 from app.llm import get_llm
+
+SYSTEM_PROMPT = """你是 RNAgent 的 AI 助手，服务于单细胞 RNA 测序（scRNA-seq）分析平台。
+
+职责与工具：
+- 回答单细胞分析相关问题，解读任务状态与评测指标（ARI/AMI/NMI/ASW/Graph_Connectivity 等）。
+- 需要数据时调用工具查询（view_datasets / view_task_data / view_task_result），
+  绝不凭空编造数据集 id、文件路径或指标数值。
+
+回答要求（重要）：
+- 简洁直接：先给结论，再按需补充必要说明，默认控制在 5 行以内。
+- 不要自由发挥：只回答用户问的，不主动扩展无关背景、不罗列长清单、不写多余的总结与客套。
+- 仅在用户明确要求「详细说明 / 完整方案 / 展开讲讲」时才展开论述。
+- 使用中文，必要时用短列表，避免大段文字。
+"""
+
+
+def _initial_messages(message: str) -> list:
+    """每条对话都以系统提示词开头（此前没有 system prompt，回复容易冗长跑题）。"""
+    return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=message)]
 
 
 @tool
@@ -81,7 +100,7 @@ ASSISTANT_TOOLS = [view_datasets, view_task_data, view_task_result]
 def run_assistant(message: str) -> str:
     """聊天助手入口：把工具绑定到 LLM，循环执行 tool calling，直至得到最终文本回复。"""
     llm = get_llm().bind_tools(ASSISTANT_TOOLS)
-    messages = [HumanMessage(content=message)]
+    messages = _initial_messages(message)
 
     for _ in range(5):  # 限制轮次，避免死循环
         resp = llm.invoke(messages)
@@ -103,7 +122,7 @@ def run_assistant(message: str) -> str:
 async def stream_assistant(message: str):
     """流式聊天助手：边生成边 yield 文本片段（支持工具调用）。"""
     llm = get_llm().bind_tools(ASSISTANT_TOOLS)
-    messages = [HumanMessage(content=message)]
+    messages = _initial_messages(message)
 
     for _ in range(5):  # 限制轮次，避免死循环
         full = None

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import config, db
-from app.event_emitter import snapshot
+from app.event_emitter import load_events, snapshot
 from app.llm import llm_configured
 from app.main import run_pipeline
 from app.tools.assistant_tools import run_assistant, stream_assistant
@@ -59,34 +59,48 @@ def _startup():
 
 
 def reconcile_tasks():
-    """启动时对账：DB 里是 running、但内存里没有对应运行线程的任务 = 上次进程残留的僵尸。
+    """启动时对账，做两件事（都幂等）：
 
-    结果写回数据库的动作只在流水线返回后执行一次，若服务中途被重启（或那次写库异常），
-    任务就会永远停在 running。这里按磁盘产物判断真实结果并修正状态。
+    ① **状态对账**：DB 是 running、内存里又没有对应运行线程 => 上次进程残留的僵尸。
+       结果写回数据库只在流水线收尾时执行一次，中途重启（或那次写库异常）就会永远停在
+       running。这里按磁盘产物判断真实结果并修正。
+    ② **日志补救**：DB 的 process.events 为空时，从 events.jsonl 把完整日志读回来。
+       （注意不能只在①里做——已经对过账、状态已是 success 的任务同样缺日志。）
     """
     for t in db.list_tasks():
-        proc = _parse_process(t.get("process"))
-        if (proc.get("status") or "") != "running":
-            continue
         task_id = t["id"]
-        with _running_lock:
-            if task_id in _running:      # 真在跑，跳过
-                continue
+        proc = _parse_process(t.get("process"))
+        changed = False
 
-        out_dir = t.get("path") or ""
-        has_report = bool(out_dir) and (Path(out_dir) / "report.html").exists()
-        proc["status"] = "success" if has_report else "failed"
-        if has_report:
-            res = proc.get("result")
-            if not isinstance(res, dict):
-                res = {}
-                proc["result"] = res
-            res.setdefault("report", {})["report_url"] = f"/output/{task_id}/report.html"
-            res.setdefault("report_status", "success")
-        else:
-            proc["error"] = proc.get("error") or "任务未完成（服务进程在收尾前中断）"
-        db.update_task_process(task_id, json.dumps(proc, ensure_ascii=False, default=str))
-        print(f"[warn] 任务状态对账：#{task_id} running -> {proc['status']}")
+        if (proc.get("status") or "") == "running":
+            with _running_lock:
+                still_running = task_id in _running
+            if not still_running:
+                out_dir = t.get("path") or ""
+                has_report = bool(out_dir) and (Path(out_dir) / "report.html").exists()
+                proc["status"] = "success" if has_report else "failed"
+                if has_report:
+                    res = proc.get("result")
+                    if not isinstance(res, dict):
+                        res = {}
+                        proc["result"] = res
+                    res.setdefault("report", {})["report_url"] = f"/output/{task_id}/report.html"
+                    res.setdefault("report_status", "success")
+                else:
+                    proc["error"] = proc.get("error") or "任务未完成（服务进程在收尾前中断）"
+                changed = True
+                print(f"[warn] 任务状态对账：#{task_id} running -> {proc['status']}")
+
+        # 日志补救：DB 里没有事件就从落盘文件读回
+        if not (proc.get("events") or []):
+            events = load_events(task_id)
+            if events:
+                proc["events"] = events
+                changed = True
+                print(f"[warn] 任务日志补救：#{task_id} 从 events.jsonl 恢复 {len(events)} 条")
+
+        if changed:
+            db.update_task_process(task_id, json.dumps(proc, ensure_ascii=False, default=str))
 
 
 # ---------- 模型（注册表驱动，新增模型自动出现在这里） ----------
@@ -213,7 +227,17 @@ def _run_in_thread(task_id: int, dataset_id: int, dataset_path: str, output_dir:
         "error": outcome.get("error"),
         "events": snapshot(task_id),
     }
-    db.update_task_process(task_id, json.dumps(process, ensure_ascii=False, default=str))
+    try:
+        db.update_task_process(task_id, json.dumps(process, ensure_ascii=False, default=str))
+    except Exception as e:
+        # 落库失败绝不能静默吞掉：异常会让这个 daemon 线程直接死掉，
+        # 任务状态就永远停在启动时写的 running（历史上正是如此）。
+        print(f"[warn] 任务 #{task_id} 结果落库失败：{e}")
+        process.pop("events", None)     # 事件可从 events.jsonl 恢复，优先保住状态与结果
+        try:
+            db.update_task_process(task_id, json.dumps(process, ensure_ascii=False, default=str))
+        except Exception as e2:
+            print(f"[error] 任务 #{task_id} 状态落库仍然失败：{e2}")
 
 
 @app.get("/api/tasks/{task_id}/state")
@@ -223,11 +247,14 @@ def task_state(task_id: int):
         raise HTTPException(status_code=404, detail="任务不存在")
 
     process = _parse_process(t["process"])
-    # 运行中的任务：process 只在流水线结束时才落库，中途 DB 里的 events 是空的。
-    # 这里补上内存缓冲里的实时事件，否则「切到别的任务再切回来」日志会消失。
-    mem = snapshot(task_id)
-    if len(mem) > len(process.get("events") or []):
-        process["events"] = mem
+    # events 有三个来源，取最全的一份：
+    #   ① DB process.events —— 只在流水线收尾时写过一次，进程中途挂掉就为空
+    #   ② 内存 BUFFERS     —— 运行中最新，但随进程消失
+    #   ③ events.jsonl     —— 追加落盘，进程重启后仍能完整恢复（日志的持久化来源）
+    candidates = [process.get("events") or [], snapshot(task_id), load_events(task_id)]
+    best = max(candidates, key=len)
+    if best:
+        process["events"] = best
 
     with _running_lock:
         process["running"] = task_id in _running

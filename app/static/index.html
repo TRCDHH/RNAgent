@@ -113,6 +113,12 @@
     background:var(--accent);color:#fff;border:1px solid var(--accent);box-shadow:none;
   }
   button.ghost:hover{background:#4338ca}
+  button.plain{background:#fff;color:var(--muted);border:1px solid var(--line);box-shadow:none}
+  button.plain:hover{background:var(--line-soft);color:var(--text)}
+  button.mini{
+    margin-left:6px;width:auto;padding:4px 11px;font-size:12px;
+    border-radius:7px;box-shadow:none;
+  }
   button.danger{
     background:var(--err);color:#fff;border:1px solid var(--err);box-shadow:none;
   }
@@ -237,6 +243,39 @@
   .chat-input input{flex:1}
   .chat-input button{width:auto;padding:9px 16px;flex:0 0 auto}
 
+  /* ---------- 弹窗 ---------- */
+  .modal-mask{
+    display:none;position:fixed;inset:0;z-index:60;padding:20px;
+    background:rgba(15,23,42,.45);backdrop-filter:blur(3px);
+    align-items:center;justify-content:center;
+  }
+  .modal-mask.show{display:flex}
+  .modal{
+    width:100%;max-width:540px;background:#fff;border-radius:var(--r-lg);
+    box-shadow:0 28px 70px -24px rgba(15,23,42,.55);overflow:hidden;
+    animation:pop .16s ease-out;
+  }
+  @keyframes pop{from{transform:translateY(10px) scale(.985);opacity:0}to{transform:none;opacity:1}}
+  .modal-head{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--line)}
+  .modal-head h3{font-size:15px;font-weight:700;color:var(--text)}
+  .modal-head .sub{font-size:11.5px;color:var(--faint)}
+  .modal-x{
+    margin-left:auto;width:28px;height:28px;padding:0;flex:0 0 auto;
+    background:transparent;color:var(--faint);box-shadow:none;
+    font-size:19px;line-height:1;border-radius:8px;
+  }
+  .modal-x:hover{background:var(--line-soft);color:var(--text)}
+  .modal-body{padding:18px 20px;display:flex;flex-direction:column;gap:15px}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field > span{font-size:12.5px;font-weight:600;color:#334155}
+  .field input{background:#fbfcfe}
+  .field .tip{font-size:11.5px;color:var(--faint);font-style:normal;line-height:1.5}
+  .modal-foot{
+    display:flex;justify-content:flex-end;gap:9px;
+    padding:14px 20px;border-top:1px solid var(--line);background:#fbfcfe;
+  }
+  .modal-foot button{width:auto;padding:8px 20px}
+
   @media (max-width:1180px){
     .layout{grid-template-columns:1fr;height:auto}
     .col{min-height:auto}
@@ -272,13 +311,9 @@
       </div>
 
       <div class="card">
-        <h2>数据集 <span class="count" id="dsCount">0</span></h2>
-        <input id="dsName" placeholder="数据集名称" />
-        <div style="height:8px"></div>
-        <input id="dsPath" placeholder="本地路径，如 D:\data\demo.h5ad" />
-        <div style="height:10px"></div>
-        <button id="dsCreate">添加数据集</button>
-        <div style="height:12px"></div>
+        <h2>数据集 <span class="count" id="dsCount">0</span>
+          <button class="mini" id="dsAdd">＋ 添加</button>
+        </h2>
         <div class="list" id="dsList"></div>
       </div>
 
@@ -320,6 +355,32 @@
       </div>
     </div>
   </div>
+
+<!-- 添加数据集弹窗 -->
+<div class="modal-mask" id="dsModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>添加数据集</h3>
+      <span class="sub">登记一份本地单细胞数据</span>
+      <button class="modal-x" id="dsCancelX" title="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <label class="field">
+        <span>数据集名称</span>
+        <input id="dsName" placeholder="如：BMMC 100 细胞" />
+      </label>
+      <label class="field">
+        <span>本地路径</span>
+        <input id="dsPath" placeholder="D:\data\BMMC-RNA.h5ad" />
+        <em class="tip">填服务器/本机上的绝对路径。支持 <b>.h5ad</b> 文件、<b>10x 输出目录</b>（含 matrix.mtx）、<b>.csv</b> 表达矩阵。</em>
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button class="plain" id="dsCancel">取消</button>
+      <button id="dsConfirm">确定添加</button>
+    </div>
+  </div>
+</div>
 
 <script>
   let currentTask = null, es = null;
@@ -403,19 +464,54 @@
     });
   }
 
-  document.getElementById("dsCreate").onclick = async () => {
-    const name = document.getElementById("dsName").value.trim();
-    const path = document.getElementById("dsPath").value.trim();
-    if (!name || !path) { alert("请填写数据集名称和本地路径"); return; }
-    const r = await fetch("/api/datasets", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, path })
-    });
-    if (!r.ok) { alert("创建失败"); return; }
-    document.getElementById("dsName").value = "";
-    document.getElementById("dsPath").value = "";
-    loadDatasets();
-  };
+  /* ---------------- 添加数据集弹窗 ---------------- */
+  const dsModal = document.getElementById("dsModal");
+  const dsNameEl = document.getElementById("dsName");
+  const dsPathEl = document.getElementById("dsPath");
+
+  function openDsModal() {
+    dsNameEl.value = "";
+    dsPathEl.value = "";
+    dsModal.classList.add("show");
+    setTimeout(() => dsNameEl.focus(), 30);
+  }
+  function closeDsModal() { dsModal.classList.remove("show"); }
+
+  async function createDataset() {
+    const name = dsNameEl.value.trim();
+    const path = dsPathEl.value.trim();
+    if (!name) { alert("请填写数据集名称"); dsNameEl.focus(); return; }
+    if (!path) { alert("请填写数据的本地路径"); dsPathEl.focus(); return; }
+
+    const btn = document.getElementById("dsConfirm");
+    btn.disabled = true;
+    try {
+      const r = await fetch("/api/datasets", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, path })
+      });
+      if (!r.ok) { alert("添加失败，请检查后端日志"); return; }
+      closeDsModal();
+      loadDatasets();
+    } catch (e) {
+      alert("网络错误：" + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  document.getElementById("dsAdd").onclick = openDsModal;
+  document.getElementById("dsCancel").onclick = closeDsModal;
+  document.getElementById("dsCancelX").onclick = closeDsModal;
+  document.getElementById("dsConfirm").onclick = createDataset;
+  // 点遮罩关闭；ESC 关闭；输入框回车直接提交
+  dsModal.onclick = e => { if (e.target === dsModal) closeDsModal(); };
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && dsModal.classList.contains("show")) closeDsModal();
+  });
+  [dsNameEl, dsPathEl].forEach(el => {
+    el.addEventListener("keydown", e => { if (e.key === "Enter") createDataset(); });
+  });
 
   /* ---------------- 任务 ---------------- */
   async function loadTasks() {

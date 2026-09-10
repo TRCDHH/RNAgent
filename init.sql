@@ -30,10 +30,11 @@ CREATE TABLE IF NOT EXISTS task (
     path VARCHAR(512),
     model VARCHAR(32) NOT NULL DEFAULT 'sclinformer',
     dataset_id BIGINT NULL,
-    process TEXT,
+    process LONGTEXT,
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 历史库升级：老表缺列时执行（新建库无需执行；服务启动时也会自动补齐）
+-- 历史库升级：老表缺列/类型不对时执行（新建库无需执行；服务启动时也会自动补齐）
 -- ALTER TABLE task ADD COLUMN model VARCHAR(32) NOT NULL DEFAULT 'sclinformer';
 -- ALTER TABLE task ADD COLUMN dataset_id BIGINT NULL;
+-- ALTER TABLE task MODIFY COLUMN process LONGTEXT;   -- TEXT 只有 64KB，长任务事件流会超限
