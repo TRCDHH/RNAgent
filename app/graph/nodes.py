@@ -15,7 +15,10 @@ def preprocess_node(state: dict):
         dataset_id = state.get("dataset_id", 1)
         dataset_path = state.get("dataset_path", "")
         output_dir = state.get("output_dir", ".")
-        result = preprocess_dataset(task_id, dataset_id, dataset_path, output_dir)
+        model = state.get("model")
+        model_params = state.get("model_params")
+        result = preprocess_dataset(task_id, dataset_id, dataset_path, output_dir,
+                                    model=model, model_params=model_params)
         emit("stage_end", {"stage": "preprocess", "status": "success"})
         return {"preprocess_status": "success", "preprocess": result, "current_stage": "preprocess"}
     except Exception as e:
@@ -29,7 +32,10 @@ def training_node(state: dict):
         task_id = state.get("task_id", 1)
         output_dir = state.get("output_dir", ".")
         preprocess = state.get("preprocess", {})
-        result = run_training(task_id, output_dir, preprocess)
+        model = state.get("model")
+        model_params = state.get("model_params")
+        result = run_training(task_id, output_dir, preprocess,
+                              model=model, model_params=model_params)
         emit("stage_end", {"stage": "training", "status": "success"})
         return {"training_status": "success", "training": result, "current_stage": "training"}
     except Exception as e:

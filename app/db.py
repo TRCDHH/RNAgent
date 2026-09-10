@@ -3,7 +3,7 @@
 - 数据库：rnagent
 - 用户：rnagent / 123456
 - 表：dataset(id, name, path, create_time)
-      task(id, name, path, process(json), create_time)
+      task(id, name, path, model, process(json), create_time)
 """
 
 from contextlib import contextmanager
@@ -59,11 +59,21 @@ def init_schema():
                     id BIGINT PRIMARY KEY AUTO_INCREMENT,
                     name VARCHAR(255) NOT NULL,
                     path VARCHAR(512),
+                    model VARCHAR(32) NOT NULL DEFAULT 'sclinformer',
                     process TEXT,
                     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+            # 兼容历史库：老表缺 model 列时补上（MySQL 不支持 ADD COLUMN IF NOT EXISTS）
+            cur.execute(
+                """
+                SELECT COUNT(*) AS n FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task' AND COLUMN_NAME = 'model'
+                """
+            )
+            if not (cur.fetchone() or {}).get("n"):
+                cur.execute("ALTER TABLE task ADD COLUMN model VARCHAR(32) NOT NULL DEFAULT 'sclinformer'")
 
 
 # ---------- dataset ----------
@@ -98,15 +108,18 @@ def delete_dataset(dataset_id: int):
 def list_tasks():
     with conn_ctx() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name, path, process, create_time FROM task ORDER BY id DESC")
+            cur.execute("SELECT id, name, path, model, process, create_time FROM task ORDER BY id DESC")
             rows = cur.fetchall()
+    for r in rows:
+        r.setdefault("model", "sclinformer")
     return rows
 
 
-def create_task(name: str, path: str) -> int:
+def create_task(name: str, path: str, model: str = "sclinformer") -> int:
     with conn_ctx() as conn:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO task (name, path) VALUES (%s, %s)", (name, path))
+            cur.execute("INSERT INTO task (name, path, model) VALUES (%s, %s, %s)",
+                        (name, path, model or "sclinformer"))
             return cur.lastrowid
 
 
@@ -125,5 +138,8 @@ def update_task_process(task_id: int, process_json: str):
 def get_task(task_id: int):
     with conn_ctx() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name, path, process, create_time FROM task WHERE id = %s", (task_id,))
-            return cur.fetchone()
+            cur.execute("SELECT id, name, path, model, process, create_time FROM task WHERE id = %s", (task_id,))
+            row = cur.fetchone()
+            if row is not None:
+                row.setdefault("model", "sclinformer")
+            return row

@@ -29,3 +29,7 @@ igraph
 
 # 训练子进程资源监控（可选，未安装时自动降级为存活/进度监控）
 psutil>=5.9
+
+# 模型：scVI（可选，仅在选择 scVI 模型时需要，惰性导入，不影响 scLinformer 流程）
+# 需要 Python >= 3.10
+scvi-tools>=1.1

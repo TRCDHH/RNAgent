@@ -14,6 +14,8 @@ class PipelineState(TypedDict, total=False):
     dataset_path: str
     output_dir: str       # 任务工作目录（输出结果目录）
     config: dict          # 由 Agent 自动生成，用户不填
+    model: str            # 选择的模型 key（sclinformer / scvi / ...），空=默认模型
+    model_params: dict    # 用户覆盖的模型参数（按模型 ParamSpec 校验）
     current_stage: str
     trace_id: str
 

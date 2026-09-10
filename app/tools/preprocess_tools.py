@@ -25,6 +25,8 @@ import traceback
 from datetime import datetime
 
 from app.event_emitter import emit
+from app.tools.common import json_safe as _json_safe
+from app.tools.models import get_backend
 
 # 通用基因词表路径（模型自带的跨数据集 gene token 词典）
 DEFAULT_VOCAB_PATH = os.path.abspath(
@@ -42,32 +44,7 @@ BATCH_ALIASES = ["batch", "sample", "sample_id", "donor", "donor_id", "sampleid"
 # ---------------------------------------------------------------------------
 # 通用工具
 # ---------------------------------------------------------------------------
-def _json_safe(obj):
-    """把 numpy 标量/数组等转成可 JSON 序列化的原生类型（鸭子类型，避免顶层 import numpy）。"""
-    if obj is None or isinstance(obj, (str, int, float, bool)):
-        return obj
-    if isinstance(obj, dict):
-        return {str(k): _json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [_json_safe(i) for i in obj]
-    # numpy 标量：.item() -> 原生标量
-    if hasattr(obj, "item") and callable(getattr(obj, "item", None)):
-        try:
-            return _json_safe(obj.item())
-        except Exception:
-            pass
-    # numpy 数组 / pandas 结构：.tolist() 或 str
-    if hasattr(obj, "tolist") and callable(getattr(obj, "tolist", None)):
-        try:
-            return obj.tolist()
-        except Exception:
-            pass
-    if hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict", None)):
-        try:
-            return _json_safe(obj.to_dict())
-        except Exception:
-            pass
-    return str(obj)
+
 
 
 def _err_info(e: Exception) -> str:
@@ -190,8 +167,12 @@ def load_data(path: str) -> dict:
 # ---------------------------------------------------------------------------
 # 工具 2：judge —— 按判定契约逐项输出 PASS/FAIL/WARNING + 证据 + 建议动作
 # ---------------------------------------------------------------------------
-def judge(adata) -> dict:
-    """对 AnnData 执行判定契约，逐项输出结论。核心顺序：先确认原始计数再谈其它。"""
+def judge(adata, backend=None) -> dict:
+    """对 AnnData 执行判定契约，逐项输出结论。核心顺序：先确认原始计数再谈其它。
+
+    backend：模型后端，用于追加**模型专属判定项**（如 scVI 的 counts 层、scLinformer 的
+    universal 覆盖率）。通用契约里不硬编码任何模型名，传 None 则只跑通用项。
+    """
     import numpy as np  # noqa: E402
     from scipy import sparse  # noqa: E402
 
@@ -239,8 +220,10 @@ def judge(adata) -> dict:
                      "evidence": f"n_cells={n_cells}, n_genes={n_genes}（下限 100 / 200）",
                      "action": "" if scale_ok else "规模偏小，训练结果可能不稳定，建议扩充样本"})
 
-    # 8) universal 基因覆盖率
-    verdicts.append(_judge_universal_coverage(adata))
+    # 8) 模型专属判定项（由后端声明，通用契约不感知任何具体模型）
+    if backend is not None:
+        for v in backend.judge_extra(adata) or []:
+            verdicts.append(v)
 
     # 汇总
     status = "PASS" if all(v["status"] == "PASS" for v in verdicts) else (
@@ -733,43 +716,24 @@ def _render_data_status(result: dict) -> str:
 
 
 def _config_impact_sentences(verdicts: list, result: dict) -> list:
-    """根据判定结果输出固定句式（检测到/未检测到 X → 结论 → 因而模型将如何训练/评测）。"""
-    by_item = {v["item"]: v for v in verdicts}
+    """根据判定结果输出固定句式（检测到/未检测到 X → 结论 → 因而模型将如何训练/评测）。
 
-    sentences = []
-    batch = by_item.get("batch", {})
-    ct = by_item.get("cell_type", {})
+    通用部分只保留与模型无关的 raw_counts。batch / cell_type 及各模型专属影响由后端
+    `impact_sentences()` 给出——本文件不硬编码任何模型名，新增模型无需改动这里。
+    """
+    by_item = {v["item"]: v for v in verdicts}
     raw = by_item.get("raw_counts", {})
 
-    # batch
-    if batch.get("status") == "PASS":
-        n = _category_count(result, "batch")
-        sentences.append(f"检测到 batch（{n} 类），use_batch=True，RNADecoder 按 {n} 类批次条件化，启用 batch 评测（Batch_ASW / Graph_Connectivity）。")
-    else:
-        sentences.append("未检测到 batch，use_batch=False，RNADecoder 无批次条件化，batch 评测项为 nan。")
-
-    # cell_type
-    if ct.get("status") == "PASS":
-        n = _category_count(result, "cell_type")
-        sentences.append(f"检测到 cell_type（{n} 类），use_cell_type=True，启用判别头与聚类评测（ARI/ASW）。")
-    else:
-        sentences.append("未检测到 cell_type，use_cell_type=False，跳过判别与 ARI/ASW 评测。")
-
-    # raw counts
+    sentences = []
     if raw.get("status") == "PASS":
-        sentences.append("检测到原始计数，模型将执行 normalize_total + log1p + HVG 预处理，无二次归一化风险。")
+        sentences.append("检测到原始计数，模型可直接基于计数建模（是否做归一化 / HVG 由所选模型决定）。")
     elif raw.get("status") == "FAIL":
         sentences.append("检测到 X 非原始计数，已尝试从 .raw / layers 顶替；若不可用则警告继续，结果可能受二次归一化影响。")
     else:
         sentences.append("X 原始计数存疑（WARNING），建议核对数据是否未经归一化，避免模型内部二次归一化失真。")
 
-    # universal 覆盖率
-    uni = by_item.get("universal_coverage", {})
-    if uni.get("status") == "PASS":
-        sentences.append("universal 基因覆盖率达到阈值，可启用 use_universal_model=True 进行跨数据集对齐。")
-    elif uni.get("status") == "WARNING":
-        sentences.append("universal 基因覆盖率偏低，建议使用 use_universal_model=False，或确认基因命名与模型词表一致。")
-
+    backend = get_backend(result.get("model"))
+    sentences.extend(backend.impact_sentences(verdicts, result) or [])
     return sentences
 
 
@@ -874,24 +838,33 @@ def save_dataset(adata, outdir: str) -> dict:
 # ---------------------------------------------------------------------------
 # 编排入口：load_data -> judge -> 修复 -> 再 judge -> 数据分析 -> 报告 -> 保存
 # ---------------------------------------------------------------------------
-def run_preprocess(task_id: int, dataset_id: int, dataset_path: str, output_dir: str) -> dict:
-    """预处理阶段编排（确定性主链路，execute_code 作为兜底）。"""
+def run_preprocess(task_id: int, dataset_id: int, dataset_path: str, output_dir: str,
+                   model: str = None, model_params: dict = None) -> dict:
+    """预处理阶段编排（确定性主链路，execute_code 作为兜底）。
+
+    model / model_params 由用户在选择模型时传入：
+    - 判定契约会追加该模型的专属判定项（judge_extra）；
+    - 数据加工按该模型声明的能力位执行（prepare_data，如 scVI 需要 counts 层 + HVG）。
+    """
     import scanpy as sc  # noqa: E402
+
+    backend = get_backend(model)
+    params = {**backend.default_params(), **backend.merge_overrides(model_params)}
 
     os.makedirs(output_dir, exist_ok=True)
     audit_log = []
     audit_log.append({"time": datetime.now().isoformat(), "op": "load_data",
-                      "detail": f"dataset_id={dataset_id}, path={dataset_path}"})
+                      "detail": f"dataset_id={dataset_id}, path={dataset_path}, model={backend.key}"})
 
-    emit("preprocess_log", {"message": f"开始预处理：加载 {dataset_path}"})
+    emit("preprocess_log", {"message": f"开始预处理（模型：{backend.name}）：加载 {dataset_path}"})
 
     # 1) load_data
     adata = _read_data(dataset_path)
     metadata = _describe(adata, dataset_path)
     emit("preprocess_log", {"message": f"加载完成：{metadata['n_cells']} 细胞 × {metadata['n_genes']} 基因"})
 
-    # 2) judge
-    verdicts = judge(adata)
+    # 2) judge（通用契约 + 模型专属判定项）
+    verdicts = judge(adata, backend)
     emit("preprocess_log", {"message": f"首次判定：{verdicts['status']}"})
     audit_log.append({"time": datetime.now().isoformat(), "op": "judge",
                       "detail": json.dumps(verdicts, ensure_ascii=False)})
@@ -900,18 +873,26 @@ def run_preprocess(task_id: int, dataset_id: int, dataset_path: str, output_dir:
     adata, audit_log = _auto_repair(adata, verdicts, output_dir, audit_log)
 
     # 4) 再 judge
-    verdicts = judge(adata)
+    verdicts = judge(adata, backend)
     emit("preprocess_log", {"message": f"修复后再判定：{verdicts['status']}"})
     audit_log.append({"time": datetime.now().isoformat(), "op": "re_judge",
                       "detail": json.dumps(verdicts, ensure_ascii=False)})
 
-    # 5) 数据分析
+    # 5) 按模型加工数据（能力位驱动，不出现模型名）
+    adata = backend.prepare_data(adata, params)
+    audit_log.append({"time": datetime.now().isoformat(), "op": "prepare_data",
+                      "detail": json.dumps({"model": backend.key, "params": params}, ensure_ascii=False)})
+    emit("preprocess_log", {"message": f"已按 {backend.name} 要求完成数据加工"})
+    # 加工后重算元数据，保证报告展示的规模与模型实际输入一致
+    metadata = _describe(adata, dataset_path)
+
+    # 6) 数据分析
     qc = qc_stats(adata)
     composition = composition_stats(adata)
     figures = plot_qc(adata, os.path.join(output_dir, "数据处理结果分析"))
     emit("preprocess_log", {"message": "数据分析完成（QC/组成/绘图）"})
 
-    # 6) 生成报告
+    # 7) 生成报告
     result = {
         "metadata": metadata,
         "judge": verdicts,
@@ -919,11 +900,12 @@ def run_preprocess(task_id: int, dataset_id: int, dataset_path: str, output_dir:
         "composition": composition,
         "figures": figures,
         "audit_log": audit_log,
+        "model": backend.key,
     }
     report = generate_report(result, output_dir)
     emit("preprocess_log", {"message": f"已生成数据处理结果分析：{report['analysis_dir']}"})
 
-    # 7) 保存数据集，交训练阶段
+    # 8) 保存数据集，交训练阶段
     saved = save_dataset(adata, output_dir)
     emit("preprocess_log", {"message": f"数据集已保存：{saved.get('path')}（交训练阶段）"})
 
@@ -933,6 +915,9 @@ def run_preprocess(task_id: int, dataset_id: int, dataset_path: str, output_dir:
         "metadata": metadata,
         "report": report,
         "processed_path": saved.get("path"),
+        "model": backend.key,
+        "model_name": backend.name,
+        "model_params": params,
     })
 
 

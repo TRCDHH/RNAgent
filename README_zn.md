@@ -277,6 +277,35 @@ RNAgent 当前支持：
 
 ---
 
+# 🧩 模型插件：选择模型 · 按模型处理
+
+分析时可**选择模型**，流水线据此对数据做不同处理：
+
+| 模型 | 数据要求 | 流水线侧处理 | 适用场景 |
+|:---|:---|:---|:---|
+| `scLinformer` | `adata.X` 为原始计数 | 不做预处理（模型内部 normalize + log1p + HVG） | 通用单细胞表征学习 |
+| `scVI` | `adata.layers["counts"]` 为原始计数 | 写 counts 层 + 高变基因筛选；**不做 log1p**（NB 似然直接建模计数） | 批次校正与低维表征 |
+
+选择方式：前端「分析模型」下拉，或
+`POST /api/tasks/run {"dataset_id": 1, "model": "scvi", "params": {"max_epochs": 50}}`。
+可选模型与参数 Schema 由 `GET /api/models` 动态返回，前端据此自动渲染参数表单。
+
+## 扩展：新增一个模型只需两个文件
+
+1. `app/tools/models/backends/<key>.py`：声明 `Capabilities`（能力位）+ `ParamSpec`（参数 Schema）+ 训练实现
+2. `app/skills/registry/models/<key>/SKILL.md`：frontmatter 声明参数默认值与 `batch_size_table` 决策表
+
+registry 自动扫描注册，`validate()` 在启动时校验「代码参数 ↔ SKILL 声明」一致性（不一致仅告警）。
+pipeline / API / DB / 前端 / 报告都通过**能力位**与 **Schema** 适配，新增模型时零改动。
+
+## 统一评测
+
+任何模型只要把嵌入写入 `adata.obsm[embedding_key]`，就复用同一个 `evaluate_sc_embedding`
+产出 `summary_metrics.csv` / `cluster_metrics.csv` / `batch_metrics.csv` 与 UMAP 图。
+因此不同模型的指标可直接横向对比，报告与前端无需区分模型。
+
+---
+
 # 🧠 Skill 系统
 
 RNAgent 将领域决策知识沉淀为模块化的 `SKILL.md`：
@@ -290,7 +319,10 @@ app/
         ├── report-generation
         ├── sc-domain-qa
         ├── training-troubleshoot
-        └── h5ad-conversion
+        ├── h5ad-conversion
+        └── models/            # 模型技能：一模型一份，机器可读
+            ├── sclinformer
+            └── scvi
 ```
 
 | Skill | 作用 |
@@ -301,6 +333,8 @@ app/
 | `sc-domain-qa` | 单细胞领域知识问答 |
 | `training-troubleshoot` | 训练故障排查 |
 | `h5ad-conversion` | 数据格式转换 |
+| `models/sclinformer` | scLinformer 参数默认值 + batch size 决策表 |
+| `models/scvi` | scVI 参数默认值 + 数据要求（counts 层） |
 
 RNAgent 使用**渐进式披露（Progressive Disclosure）**机制：
 
@@ -399,6 +433,8 @@ python server.py
 | `LLM_MODEL` | `deepseek-v4-flash` | LLM 模型名称 |
 | `MODEL_EPOCHS` | `1` | 模型训练轮数 |
 | `MODEL_BATCH_SIZE` | 自动 | 根据 GPU / 数据规模自动决定 |
+| `DEFAULT_MODEL` | `sclinformer` | 默认分析模型（可选 `sclinformer` / `scvi`） |
+| `{模型KEY}_{参数名}` | 见各模型 SKILL.md | 覆盖单个模型参数，如 `SCVI_MAX_EPOCHS=200` |
 | `SCLINFORMER_DIR` | `../../model/scLinformer-main` | scLinformer 源码目录 |
 | `SANDBOX_IMAGE` | `rna-sandbox:latest` | `execute_code` 沙箱镜像（首次运行按 `docker/sandbox.Dockerfile` 自动构建） |
 | `SANDBOX_TIMEOUT` | `300` | 沙箱执行超时（秒），超时强杀容器 |

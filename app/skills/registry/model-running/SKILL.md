@@ -1,66 +1,53 @@
 ---
 name: model-running
-description: scLinformer 模型运行技能：分析上一步(预处理)结果与本机环境，决定 use_batch / batch_size，传参执行训练+评测工具。不启用 universal_model，其余用 train.py 默认值。
+description: 模型运行阶段（与具体模型无关）：读取预处理产物决定能力开关、按模型 SKILL 决定参数、子进程训练并统一评测。各模型专属规则见 registry/models/<key>/SKILL.md。
 ---
 
-# scLinformer 模型运行技能
+# 模型运行技能（模型无关）
 
-本阶段 Agent 只做两件事：**分析上一阶段结果 + 本机环境 → 决定参数**，以及**把参数传给
-训练工具执行**。模型（scLinformer）内部会自己做 `normalize_total + log1p + HVG`，本阶段不重复预处理。
+本阶段只做三件事：**读上一步结果 → 决定参数 → 传参执行工具**。
+**具体模型名不出现在本流程中**：所有差异都由后端声明的 `Capabilities` 能力位与
+`ParamSpec` 参数 Schema 表达，各模型的规则与默认值写在
+`skills/registry/models/<key>/SKILL.md`。
 
-## 一、先分析什么
+## 一、分析什么
 
-1. 上一步（预处理）结果：预处理产物 `processed_rna.h5ad` 的 `obs.columns` 里有没有
-   `cell_type` / `batch` 列。这等价于判定契约的结论：
-   - 有 `cell_type` → `use_cell_type=True`；没有 → `False`
-   - 有 `batch` → `use_batch=True`；没有 → `False`
-2. 本机环境：是否有 GPU、显存多大（`torch.cuda.get_device_properties(0).total_memory`），
-   以及数据规模 `n_cells`（决定 batch 与显存占用）。
+1. 预处理产物 `processed_rna.h5ad` 的 `obs.columns`：决定 `use_batch` / `use_cell_type`
+   这类能力开关（有列则开，无列则关，避免模型访问缺失列崩溃）。
+2. 本机环境：是否有 GPU、显存大小、数据规模 `n_cells`（决定 `batch_size` 与设备）。
 
-## 二、参数决定规则
+## 二、参数决定流程（与模型无关）
 
-| 参数 | 怎么定 |
-|------|--------|
-| use_batch | `'batch' in obs.columns`。没有就 False，否则模型访问缺失列会崩 |
-| use_cell_type | `'cell_type' in obs.columns`。同上 |
-| batch_size | 按显存 + n_cells 查下面的表 |
-| use_universal_model | **固定 False**（不启用） |
-| 其他 | 用 train.py / Model 默认值：process_data=True、use_hvg=True、n_genes=2000 |
+```text
+ParamSpec 默认值（代码声明类型/范围）
+        ↓  覆盖
+SKILL.md params（声明默认值 —— 调参只改 SKILL，不改代码）
+        ↓  覆盖
+环境变量 {MODEL_KEY}_{PARAM}（如 SCVI_MAX_EPOCHS）
+        ↓  覆盖
+用户传入 params（API / 前端表单，按 Schema 强转与校验）
+        ↓  补全
+环境自动决策（batch_size 按 SKILL 的 batch_size_table 查表）
+```
 
-### batch_size 查表（显存优先，数据量微调）
+## 三、按能力位分流（而不是按模型名）
 
-| 显存 | batch_size |
-|------|-----------|
-| 无 GPU / CPU | 32 |
-| < 4GB | 32 |
-| 4 ~ 8GB | 64 |
-| 8 ~ 16GB | 128 |
-| 16 ~ 24GB | 256 |
-| ≥ 24GB | 512 |
+| 能力位 | 为真时流水线做什么 |
+|--------|------------------|
+| `needs_counts_layer` | 预处理阶段把原始计数写入 `layers["counts"]` |
+| `owns_preprocessing` | 为真：模型内部做归一化/HVG，流水线不动；为假：流水线侧做 HVG 筛选 |
+| `supports_batch` / `supports_celltype` | 按 obs 列自动开关对应的能力 |
+| `evaluates_internally` | 为真：模型自带评测，训练阶段不重复评测；为假：统一调 `evaluate_sc_embedding` |
 
-数据量微调（在表值基础上再收窄）：
+## 四、统一评测（关键）
 
-- `n_cells < 500` → 取 `min(表值, 32)`
-- `500 ≤ n_cells < 2000` → 取 `min(表值, 64)`
-- 始终保证 `1 ≤ batch_size ≤ n_cells`
+任何模型只要把嵌入写进 `adata.obsm[embedding_key]`，就调用同一个
+`evaluate_sc_embedding` 产出 `summary_metrics.csv` / `cluster_metrics.csv` /
+`batch_metrics.csv` 与 UMAP 图。**因此结果分析、报告、前端、AI 助手完全不需要区分模型。**
 
-### 数据量案例
+## 五、执行与兜底
 
-- 小样本：`n_cells=800`，8GB 显存 → 表值 64，收窄后 `min(64,64)=64` → batch_size=64
-- 中样本：`n_cells=20000`，16GB 显存 → batch_size=256
-- 大样本：`n_cells=120000`，24GB 显存 → batch_size=512
-- CPU 环境：`n_cells=5000`、无 GPU → batch_size=32（慢但能出结果）
-- 无 batch 列：`use_batch=False`（即使 Model 默认 True 也要关掉）
-
-## 三、异常兜底
-
-- CUDA out of memory → batch_size 减半重试（或设环境变量 `MODEL_BATCH_SIZE` 强制小 batch）
-- 找不到 `processed_rna.h5ad` → 报错并提示先完成预处理阶段
-- 无 GPU → 自动用 CPU，batch_size 取小型（32），提示训练较慢
-
-## 四、产出
-
-- 模型权重：`<output_dir>/model/*.pth`
-- 评测指标：`<output_dir>/summary_metrics.csv`（ARI/AMI/NMI/HOM/Cell_ASW/Batch_ASW/Graph_Connectivity）
-- UMAP 图：`<output_dir>/umap_cell_type.png`、`<output_dir>/umap_batch.png`（有对应列时）
-- 运行参数与指标写入任务 process，供结果分析阶段读取
+- 训练在独立子进程执行（`app/tools/train_worker.py`），崩溃 / OOM / 段错误不连累主服务；
+  父进程轮询 `progress.jsonl` 与 `train_stdout.log` 转发进度。
+- 模型不可用时（源码缺失 / 依赖未装）前端置灰该选项，运行期给出明确报错。
+- 找不到 `processed_rna.h5ad` → 报错并提示先完成预处理阶段。

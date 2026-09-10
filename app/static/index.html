@@ -38,6 +38,13 @@
     .badge.success { background: #ecfdf5; color: var(--ok); }
     .badge.failed { background: #fef2f2; color: var(--err); }
     .badge.unknown { background: #f3f4f6; color: var(--muted); }
+    .badge.model { background: #eef2ff; color: #4f46e5; }
+    /* 模型参数表单（由 /api/models 的 Schema 动态生成） */
+    .param { margin-bottom: 8px; }
+    .param label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+    .param .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    details.adv { margin-top: 8px; }
+    details.adv summary { font-size: 12px; color: var(--muted); cursor: pointer; }
     .stages { display: flex; gap: 8px; }
     .stage { flex: 1; padding: 10px; border: 1px solid var(--line); border-radius: 8px; text-align: center; color: var(--muted); background: var(--card); font-size: 12px; }
     .stage.done { border-color: var(--ok); color: var(--ok); }
@@ -77,12 +84,18 @@
 <body>
   <header>
     <h1>RNAgent 单细胞 RNA 分析 Agent</h1>
-    <p>LangGraph 编排 + DeepSeek + 本地 MySQL；预处理 -> scLinformer 训练评测 -> 结果生成 HTML 报告</p>
+    <p>LangGraph 编排 + DeepSeek + 本地 MySQL；预处理 -> 所选模型训练评测 -> 结果生成 HTML 报告</p>
   </header>
 
   <div class="layout">
-    <!-- 左列：数据集 + 任务管理 -->
+    <!-- 左列：模型 + 数据集 + 任务管理 -->
     <div class="col">
+      <div class="card">
+        <h2>分析模型</h2>
+        <select id="modelSel"></select>
+        <div id="modelDesc" style="color:var(--muted);font-size:12px;margin:6px 0"></div>
+        <div id="modelParams"></div>
+      </div>
       <div class="card">
         <h2>数据集管理</h2>
         <div class="row"><input id="dsName" placeholder="数据集名称" /><input id="dsPath" placeholder="本地路径 (如 D:\\data\\demo.h5ad)" /></div>
@@ -121,6 +134,98 @@
 
   <script>
     let currentTask = null, es = null;
+    let MODELS = [], DEFAULT_MODEL = 'sclinformer';
+
+    // ---------- 模型（选项与参数表单全部来自 /api/models 的 Schema）----------
+    async function loadModels() {
+      const r = await fetch('/api/models'); const d = await r.json();
+      MODELS = d.models || [];
+      DEFAULT_MODEL = d.default || (MODELS[0] && MODELS[0].key) || 'sclinformer';
+      const sel = document.getElementById('modelSel');
+      sel.innerHTML = '';
+      MODELS.forEach(m => {
+        const o = document.createElement('option');
+        o.value = m.key;
+        o.textContent = m.available ? m.name : `${m.name}（不可用）`;
+        o.disabled = !m.available;
+        if (m.key === DEFAULT_MODEL) o.selected = true;
+        sel.appendChild(o);
+      });
+      if (sel.value && !MODELS.find(m => m.key === sel.value && m.available)) {
+        const first = MODELS.find(m => m.available);
+        if (first) sel.value = first.key;
+      }
+      sel.onchange = renderModelForm;
+      (d.warnings || []).forEach(w => console.warn('[models]', w));
+      renderModelForm();
+    }
+
+    function currentModel() {
+      const key = document.getElementById('modelSel').value;
+      return MODELS.find(m => m.key === key) || MODELS[0];
+    }
+
+    function renderModelForm() {
+      const m = currentModel();
+      if (!m) return;
+      document.getElementById('modelDesc').textContent =
+        (m.description || '') + (m.available ? '' : ` —— 不可用：${m.reason || ''}`);
+
+      const box = document.getElementById('modelParams');
+      box.innerHTML = '';
+      const build = (p) => {
+        const id = 'p_' + p.name;
+        const wrap = document.createElement('div');
+        wrap.className = 'param';
+        if (p.type === 'bool') {
+          wrap.innerHTML = `<label>${esc(p.label)}</label><select id="${id}">` +
+            (p.auto ? '<option value="">自动</option>' : '') +
+            '<option value="1">开启</option><option value="0">关闭</option></select>';
+          const s = wrap.querySelector('select');
+          s.value = p.default === true ? '1' : (p.default === false ? '0' : '');
+        } else if (p.type === 'enum') {
+          wrap.innerHTML = `<label>${esc(p.label)}</label><select id="${id}">` +
+            (p.choices || []).map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('') +
+            '</select>';
+          const s = wrap.querySelector('select');
+          if (p.default != null) s.value = p.default;
+        } else {
+          const attrs = [];
+          if (p.min != null) attrs.push(`min="${p.min}"`);
+          if (p.max != null) attrs.push(`max="${p.max}"`);
+          const val = (p.auto || p.default == null) ? '' : p.default;
+          wrap.innerHTML = `<label>${esc(p.label)}${p.auto ? '（留空自动）' : ''}</label>` +
+            `<input type="number" id="${id}" ${attrs.join(' ')} placeholder="${p.auto ? '自动' : ''}" value="${esc(val)}">`;
+        }
+        if (p.desc) {
+          const h = document.createElement('div');
+          h.className = 'hint'; h.textContent = p.desc; wrap.appendChild(h);
+        }
+        return wrap;
+      };
+
+      (m.params || []).filter(p => !p.advanced).forEach(p => box.appendChild(build(p)));
+      const adv = (m.params || []).filter(p => p.advanced);
+      if (adv.length) {
+        const det = document.createElement('details');
+        det.className = 'adv';
+        det.innerHTML = `<summary>高级参数（${adv.length}）</summary>`;
+        adv.forEach(p => det.appendChild(build(p)));
+        box.appendChild(det);
+      }
+    }
+
+    function collectParams() {
+      const m = currentModel(); const out = {};
+      (m.params || []).forEach(p => {
+        const el = document.getElementById('p_' + p.name);
+        if (!el) return;
+        const v = el.value;
+        if (v === '' || v == null) return;          // 留空 = 交给默认值 / 自动决策
+        out[p.name] = (p.type === 'int' || p.type === 'float') ? Number(v) : v;
+      });
+      return out;
+    }
 
     async function loadDatasets() {
       const r = await fetch('/api/datasets'); const d = await r.json();
@@ -145,7 +250,8 @@
         const status = (t.process && t.process.status) || 'unknown';
         const el = document.createElement('div');
         el.className = 'item' + (currentTask === t.id ? ' active' : '');
-        el.innerHTML = `<div class="title">#${t.id} ${esc(t.name)} <span class="badge ${status}">${status}</span></div>
+        const modelName = ((MODELS.find(x => x.key === t.model) || {}).name) || t.model || '';
+        el.innerHTML = `<div class="title">#${t.id} ${esc(t.name)} <span class="badge ${status}">${status}</span>${modelName ? ` <span class="badge model">${esc(modelName)}</span>` : ''}</div>
           <div class="sub">${esc(t.path || '')}</div>
           <div class="actions">
             <button data-result="${t.id}">查看结果</button>
@@ -192,8 +298,10 @@
 
     async function startAnalysis(datasetId) {
       resetStages(); clearTimeline();
-      const r = await fetch('/api/tasks/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ dataset_id: datasetId }) });
+      const m = currentModel();
+      const r = await fetch('/api/tasks/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ dataset_id: datasetId, model: m && m.key, params: collectParams() }) });
       const d = await r.json();
+      if (!r.ok) { alert((d && d.detail) || '启动分析失败'); return; }
       currentTask = d.task_id;
       loadTasks();
       if (es) es.close();
@@ -266,7 +374,7 @@
 
     function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-    loadDatasets(); loadTasks();
+    loadModels().then(() => { loadDatasets(); loadTasks(); });
   </script>
 </body>
 </html>

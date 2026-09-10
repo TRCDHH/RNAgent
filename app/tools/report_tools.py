@@ -16,7 +16,8 @@ import re
 
 from app.event_emitter import emit
 from app.llm import get_llm, llm_configured
-from app.tools.preprocess_tools import _json_safe
+from app.tools.common import json_safe as _json_safe
+from app.tools.models import get_backend
 
 # scLinformer 评测产物文件名（与 utils.evaluate_sc_embedding 输出一致）
 SUMMARY_CSV = "summary_metrics.csv"
@@ -83,7 +84,19 @@ def collect_report_context(output_dir, preprocess, training, dataset_id) -> dict
     if os.path.exists(os.path.join(output_dir, UMAP_BATCH)):
         images["batch"] = UMAP_BATCH
 
+    # 模型信息（本次分析用的是哪个模型、参数是什么）——与具体模型无关，从注册表取
+    model_key = training.get("model") or preprocess.get("model")
+    backend = get_backend(model_key)
+    model_info = {
+        "key": backend.key,
+        "name": training.get("model_name") or preprocess.get("model_name") or backend.name,
+        "description": backend.description,
+        "params": training.get("model_params") or preprocess.get("model_params") or {},
+        "capabilities": backend.capabilities.to_dict(),
+    }
+
     return _json_safe({
+        "model": model_info,
         "dataset": dataset,
         "data_condition": {
             "use_cell_type": cfg.get("use_cell_type"),
@@ -119,13 +132,17 @@ def generate_report_html(dataset_id, output_dir, preprocess, training) -> str:
 def _llm_report(context: dict) -> str:
     """让 LLM（DeepSeek）基于完整结果生成报告；失败返回空串。"""
     llm = get_llm()
-    prompt = f"""你是单细胞 RNA 测序（scRNA-seq）分析助手。下面是本次 scLinformer 流水线的完整结果（JSON）。
+    model = context.get("model") or {}
+    model_name = model.get("name") or "未知模型"
+    prompt = f"""你是单细胞 RNA 测序（scRNA-seq）分析助手。下面是本次「{model_name}」流水线的完整结果（JSON）。
 请基于它生成一份完整、美观的中文 HTML 分析报告。
+
+本次使用的模型：{model_name}（{model.get('description') or ''}）
 
 要求：
 - 直接输出 HTML 代码（从 <!DOCTYPE html> 开始），不要输出任何解释性文字或 markdown 代码块标记。
-- 报告至少覆盖：数据集概览、数据状况（有无 cell_type/batch、judge 结论）、训练配置与资源占用、
-  模型评测（逐项解读指标 + UMAP 可视化）、结论与建议。
+- 报告至少覆盖：所用模型（名称与关键参数）、数据集概览、数据状况（有无 cell_type/batch、judge 结论）、
+  训练配置与资源占用、模型评测（逐项解读指标 + UMAP 可视化）、结论与建议。
 - 指标解读：ARI/AMI/NMI/HOM 越接近 1 聚类越好；Cell_ASW/Batch_ASW 越接近 1 越好；
   Graph_Connectivity 越接近 1 越好。
 - UMAP 图用相对路径引用（<img src="umap_cell_type.png"> / <img src="umap_batch.png">），
@@ -193,6 +210,7 @@ def _img_block(src, caption):
 
 def _mock_html(context: dict) -> str:
     ds = context.get("dataset") or {}
+    model = context.get("model") or {}
     cond = context.get("data_condition") or {}
     cfg = context.get("train_config") or {}
     env = context.get("env") or {}
@@ -214,8 +232,16 @@ def _mock_html(context: dict) -> str:
     cond_rows = _kv_table(cond)
     cfg_rows = _kv_table(cfg)
     env_rows = _kv_table(env)
+    model_rows = _kv_table({
+        "模型": model.get("name"),
+        "标识": model.get("key"),
+        "说明": model.get("description"),
+        **({"用户参数": json.dumps(model.get("params") or {}, ensure_ascii=False)}
+           if model.get("params") else {}),
+    })
+    model_name = model.get("name") or "模型"
 
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>scLinformer 分析报告</title>
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>{model_name} 分析报告</title>
 <style>
 body{{font-family:-apple-system,'Segoe UI',sans-serif;margin:0;background:#f5f7fa;color:#111}}
 .wrap{{max-width:960px;margin:0 auto;padding:32px 20px}}
@@ -229,8 +255,9 @@ h1{{color:#2563eb;margin-bottom:4px}} .sub{{color:#6b7280;margin-top:0}}
 .img p{{color:#6b7280;font-size:13px;margin:6px 0}}
 .note{{background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;color:#92400e;font-size:13px}}
 </style></head><body><div class="wrap">
-<h1>scLinformer 单细胞分析报告</h1><p class="sub">数据集 #{ds.get('dataset_id')} · {ds.get('n_cells')} 细胞 × {ds.get('n_genes')} 基因</p>
+<h1>{model_name} 单细胞分析报告</h1><p class="sub">数据集 #{ds.get('dataset_id')} · {ds.get('n_cells')} 细胞 × {ds.get('n_genes')} 基因</p>
 
+<div class="card"><h2>所用模型</h2>{model_rows}</div>
 <div class="card"><h2>数据集概览</h2>{_kv_table(ds)}</div>
 <div class="card"><h2>数据状况</h2>{cond_rows}</div>
 <div class="card"><h2>训练配置</h2>{cfg_rows}</div>
@@ -240,5 +267,5 @@ h1{{color:#2563eb;margin-bottom:4px}} .sub{{color:#6b7280;margin-top:0}}
 <div class="card"><h2>批次 / ASW 指标</h2>{batch_rows}</div>
 <div class="card"><h2>UMAP 可视化</h2>{imgs}</div>
 <div class="card"><h2>产物</h2>{_kv_table(arts)}</div>
-<div class="note">本报告由本地模板生成（未配置 LLM_API_KEY 或 LLM 调用失败）。指标为 N/A 表示对应评测项因缺少 cell_type/batch 而跳过。</div>
+<div class="note">本报告由本地模板生成（未配置 LLM_API_KEY 或 LLM 调用失败）。指标为 N/A 表示对应评测项因缺少 cell_type/batch 而跳过。所有模型共用同一套评测（evaluate_sc_embedding），指标可直接横向对比。</div>
 </div></body></html>"""

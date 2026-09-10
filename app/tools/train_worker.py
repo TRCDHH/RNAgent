@@ -1,4 +1,4 @@
-"""训练子进程 worker：独立进程运行 scLinformer 训练 + 评测。
+"""训练子进程 worker：独立进程按模型后端执行训练 + 评测。
 
 设计（对齐架构方案「阶段 2 子进程隔离」）：
 - 训练是重负载长任务（占满 GPU/CPU、可能 OOM/段错误），放进独立子进程，
@@ -9,7 +9,7 @@
 
 调用方式（父进程）：
     python -m app.tools.train_worker <job.json>
-其中 job.json 含 rna_path / output_dir / model_config。
+其中 job.json 含 rna_path / output_dir / model / model_config。
 """
 
 import json
@@ -45,14 +45,15 @@ def main():
     try:
         import scanpy as sc  # noqa: E402 惰性导入
 
-        _append_progress(prog_path, "训练子进程启动，加载数据")
+        from app.tools.models import get_backend  # noqa: E402
+        backend = get_backend(job.get("model"))
+        _append_progress(prog_path, f"训练子进程启动，加载数据（模型 {backend.name}）")
+
         adata = sc.read_h5ad(job["rna_path"])
         _append_progress(prog_path, "数据加载完成",
                          n_cells=int(adata.n_obs), n_genes=int(adata.n_vars))
 
-        # 复用主模块的训练+评测实现（其中的 emit 会打印到本子进程 stdout，被日志捕获）
-        from app.tools.model_tools import _train_and_eval
-        result = _train_and_eval(adata, output_dir, job["model_config"])
+        result = backend.train_and_eval(adata, output_dir, job["model_config"])
 
         with open(result_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, default=str)

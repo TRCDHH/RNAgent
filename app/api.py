@@ -22,6 +22,7 @@ from app.event_emitter import snapshot
 from app.llm import llm_configured
 from app.main import run_pipeline
 from app.tools.assistant_tools import run_assistant, stream_assistant
+from app.tools.models import all_backends, default_key, get_backend, list_models, validate
 
 app = FastAPI(title="RNAgent")
 
@@ -43,6 +44,20 @@ def _startup():
         db.init_schema()
     except Exception as e:
         print(f"[warn] 数据库初始化失败（请先执行 init.sql）：{e}")
+    # 模型注册表自检：模型实现与 SKILL.md 是否一致（不一致只告警，不影响启动）
+    for problem in validate():
+        print(f"[warn] 模型一致性自检：{problem}")
+
+
+# ---------- 模型（注册表驱动，新增模型自动出现在这里） ----------
+@app.get("/api/models")
+def api_models():
+    """返回可选模型列表 + 参数 Schema（前端据此动态渲染参数表单）。"""
+    return {
+        "models": list_models(with_schema=True),
+        "default": default_key(),
+        "warnings": validate(),
+    }
 
 
 @app.get("/")
@@ -82,6 +97,7 @@ def list_tasks():
             "id": t["id"],
             "name": t["name"],
             "path": t["path"],
+            "model": t.get("model") or default_key(),
             "process": _parse_process(t["process"]),
             "create_time": str(t["create_time"]),
         })
@@ -90,6 +106,8 @@ def list_tasks():
 
 class RunIn(BaseModel):
     dataset_id: int
+    model: str = None         # 模型 key，空=默认模型
+    params: dict = None       # 覆盖模型参数（按该模型 ParamSpec 强转与校验）
 
 
 @app.post("/api/tasks/run")
@@ -98,7 +116,19 @@ def run_task(body: RunIn):
     if not ds:
         raise HTTPException(status_code=404, detail="数据集不存在")
 
-    task_id = db.create_task(name=ds["name"], path="")
+    if body.model and body.model not in all_backends():
+        raise HTTPException(status_code=400, detail=f"未知模型：{body.model}")
+    backend = get_backend(body.model)
+    ok, reason = backend.is_available()
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"模型 {backend.name} 不可用：{reason}")
+
+    try:
+        model_params = backend.merge_overrides(body.params)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"参数校验失败：{e}")
+
+    task_id = db.create_task(name=ds["name"], path="", model=backend.key)
     task_name = f"{ds['name']}_{task_id}"
     output_dir = str(RUNTIME_TASK_DIR / str(task_id))
     db.update_task_meta(task_id, task_name, output_dir)
@@ -109,15 +139,17 @@ def run_task(body: RunIn):
 
     threading.Thread(
         target=_run_in_thread,
-        args=(task_id, body.dataset_id, ds["path"], output_dir),
+        args=(task_id, body.dataset_id, ds["path"], output_dir, backend.key, model_params),
         daemon=True,
     ).start()
-    return {"task_id": task_id}
+    return {"task_id": task_id, "model": backend.key}
 
 
-def _run_in_thread(task_id: int, dataset_id: int, dataset_path: str, output_dir: str):
+def _run_in_thread(task_id: int, dataset_id: int, dataset_path: str, output_dir: str,
+                   model: str = None, model_params: dict = None):
     try:
-        outcome = run_pipeline(task_id, dataset_id, dataset_path=dataset_path, output_dir=output_dir)
+        outcome = run_pipeline(task_id, dataset_id, dataset_path=dataset_path, output_dir=output_dir,
+                               model=model, model_params=model_params)
     finally:
         with _running_lock:
             _running.discard(task_id)

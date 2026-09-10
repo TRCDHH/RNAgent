@@ -11,9 +11,14 @@ from app.graph.builder import build_app
 
 
 def run_pipeline(task_id: int = 1, dataset_id: int = 3,
-                 dataset_path: str = None, output_dir: str = None) -> dict:
+                 dataset_path: str = None, output_dir: str = None,
+                 model: str = None, model_params: dict = None) -> dict:
+    from app.tools.models import default_key, get_backend
+
+    backend = get_backend(model)
     set_context(task_id, f"trace_{task_id}")
-    emit("pipeline_start", {"task_id": task_id, "dataset_id": dataset_id})
+    emit("pipeline_start", {"task_id": task_id, "dataset_id": dataset_id,
+                            "model": backend.key, "model_name": backend.name})
 
     app = build_app()
     config = {"configurable": {"thread_id": f"task_{task_id}"}}
@@ -23,6 +28,8 @@ def run_pipeline(task_id: int = 1, dataset_id: int = 3,
         "dataset_path": dataset_path or "/data/demo.h5ad",
         "output_dir": output_dir or ".",
         "config": {},
+        "model": model or default_key(),
+        "model_params": model_params or {},
         "current_stage": "preprocess",
     }
 
@@ -35,8 +42,10 @@ def run_pipeline(task_id: int = 1, dataset_id: int = 3,
         return {"status": "failed", "error": str(e)}
 
 
-def run(task_id: int = 1, dataset_id: int = 3, dataset_path: str = None, output_dir: str = None):
-    outcome = run_pipeline(task_id, dataset_id, dataset_path=dataset_path, output_dir=output_dir)
+def run(task_id: int = 1, dataset_id: int = 3, dataset_path: str = None, output_dir: str = None,
+        model: str = None, model_params: dict = None):
+    outcome = run_pipeline(task_id, dataset_id, dataset_path=dataset_path, output_dir=output_dir,
+                           model=model, model_params=model_params)
     if outcome["status"] == "success":
         print("\n===== 最终状态（PipelineState）=====")
         print(json.dumps(outcome["result"], ensure_ascii=False, default=str, indent=2))
