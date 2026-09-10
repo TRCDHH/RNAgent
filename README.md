@@ -34,11 +34,9 @@ RNAgent exists for one reason:
 
 No scripts to wire up, no parameters to tune, no environment archaeology. One dataset in, one HTML report out:
 
-```text
-┌─────────────────┐      ┌──────────────┐      ┌─────────────────┐
-│ ① Pick a dataset│ ───▶ │ ② Pick a model│ ───▶ │ ③ Read the report│
-└─────────────────┘      └──────────────┘      └─────────────────┘
-```
+<p align="center">
+  <img src="imgs/pi.png" alt="Three steps: pick a dataset, pick a model, read the report" width="940"/>
+</p>
 
 Behind that simplicity is a 3-stage **LangGraph** pipeline (preprocess → model → report) that decides everything it can on its own:
 
