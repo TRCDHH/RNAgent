@@ -3,9 +3,10 @@
 - 数据库：rnagent
 - 用户：rnagent / 123456
 - 表：dataset(id, name, path, create_time)
-      task(id, name, path, model, process(json), create_time)
+      task(id, name, path, model, dataset_id, process(json), create_time)
 """
 
+import json
 from contextlib import contextmanager
 
 import pymysql
@@ -60,20 +61,51 @@ def init_schema():
                     name VARCHAR(255) NOT NULL,
                     path VARCHAR(512),
                     model VARCHAR(32) NOT NULL DEFAULT 'sclinformer',
+                    dataset_id BIGINT NULL,
                     process TEXT,
                     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
-            # 兼容历史库：老表缺 model 列时补上（MySQL 不支持 ADD COLUMN IF NOT EXISTS）
-            cur.execute(
-                """
-                SELECT COUNT(*) AS n FROM information_schema.COLUMNS
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task' AND COLUMN_NAME = 'model'
-                """
-            )
-            if not (cur.fetchone() or {}).get("n"):
-                cur.execute("ALTER TABLE task ADD COLUMN model VARCHAR(32) NOT NULL DEFAULT 'sclinformer'")
+            # 兼容历史库：缺列时补上（MySQL 不支持 ADD COLUMN IF NOT EXISTS）
+            added = []
+            for col, ddl in (
+                ("model", "ALTER TABLE task ADD COLUMN model VARCHAR(32) NOT NULL DEFAULT 'sclinformer'"),
+                ("dataset_id", "ALTER TABLE task ADD COLUMN dataset_id BIGINT NULL"),
+            ):
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS n FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task' AND COLUMN_NAME = %s
+                    """,
+                    (col,),
+                )
+                if not (cur.fetchone() or {}).get("n"):
+                    cur.execute(ddl)
+                    added.append(col)
+            if "dataset_id" in added:
+                _backfill_dataset_id(cur)
+
+
+def _backfill_dataset_id(cur):
+    """给历史任务回填 dataset_id：从 process JSON 的事件里提取（一次性、幂等）。
+
+    老任务的 process 事件里带有 dataset_id 字段（pipeline_start 等），
+    建列后跑一次即可补齐；取不到的行保持 NULL（前端显示「数据集已删除/未知」）。
+    """
+    cur.execute("SELECT id, process FROM task WHERE dataset_id IS NULL")
+    for row in cur.fetchall():
+        ds_id = None
+        try:
+            data = json.loads(row["process"]) if row["process"] else {}
+        except Exception:
+            data = {}
+        for ev in (data.get("events") or []):
+            if ev.get("dataset_id") is not None:
+                ds_id = ev["dataset_id"]
+                break
+        if ds_id is not None:
+            cur.execute("UPDATE task SET dataset_id = %s WHERE id = %s", (ds_id, row["id"]))
 
 
 # ---------- dataset ----------
@@ -108,19 +140,27 @@ def delete_dataset(dataset_id: int):
 def list_tasks():
     with conn_ctx() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name, path, model, process, create_time FROM task ORDER BY id DESC")
+            cur.execute("SELECT id, name, path, model, dataset_id, process, create_time "
+                        "FROM task ORDER BY id DESC")
             rows = cur.fetchall()
     for r in rows:
         r.setdefault("model", "sclinformer")
+        r.setdefault("dataset_id", None)
     return rows
 
 
-def create_task(name: str, path: str, model: str = "sclinformer") -> int:
+def create_task(name: str, path: str, model: str = "sclinformer", dataset_id: int = None) -> int:
     with conn_ctx() as conn:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO task (name, path, model) VALUES (%s, %s, %s)",
-                        (name, path, model or "sclinformer"))
+            cur.execute("INSERT INTO task (name, path, model, dataset_id) VALUES (%s, %s, %s, %s)",
+                        (name, path, model or "sclinformer", dataset_id))
             return cur.lastrowid
+
+
+def delete_task(task_id: int):
+    with conn_ctx() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM task WHERE id = %s", (task_id,))
 
 
 def update_task_meta(task_id: int, name: str, path: str):
@@ -138,8 +178,10 @@ def update_task_process(task_id: int, process_json: str):
 def get_task(task_id: int):
     with conn_ctx() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name, path, model, process, create_time FROM task WHERE id = %s", (task_id,))
+            cur.execute("SELECT id, name, path, model, dataset_id, process, create_time "
+                        "FROM task WHERE id = %s", (task_id,))
             row = cur.fetchone()
             if row is not None:
                 row.setdefault("model", "sclinformer")
+                row.setdefault("dataset_id", None)
             return row

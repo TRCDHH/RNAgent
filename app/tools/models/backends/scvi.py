@@ -25,12 +25,26 @@ DEFAULT_STRUCTURE = {
     "dropout_rate": 0.1,
 }
 
+# scvi-tools 官方训练轮数启发式，复刻自 scvi/model/_utils.py::get_max_epochs_heuristic
+#   max_epochs = min(round(20000 / n_cells * 400), 400)，下限 1
+# 在 scvi/model/base/_training_mixin.py 中：max_epochs=None 时自动调用该启发式。
+# 之所以在这里复刻而不是直接调用：主进程绝不能 import scvi（冷启动约 7 秒）。
+# 训练时会把这个算好的整数显式传给 model.train()，因此行为与 scvi 完全一致。
+EPOCHS_CAP = 400
+EPOCHS_DECAY_AT_N_OBS = 20000
+
+
+def _max_epochs_heuristic(n_cells: int) -> int:
+    """按 scvi-tools 官方启发式给出 max_epochs（细胞越多轮数越少，上限 400）。"""
+    n = max(1, int(n_cells or 1))
+    return max(1, min(round((EPOCHS_DECAY_AT_N_OBS / n) * EPOCHS_CAP), EPOCHS_CAP))
+
 
 @register_model
 class ScVIBackend(ModelBackend):
     key = "scvi"
     name = "scVI"
-    description = "单细胞变分自编码器：以负二项似然直接建模原始计数，擅长批次校正与低维表征；要求原始计数存入 layers['counts']。"
+    description = "变分自编码器，擅长批次校正与低维表征。"  # 兜底，实际取 SKILL.md
 
     capabilities = Capabilities(
         needs_counts_layer=True,
@@ -43,8 +57,9 @@ class ScVIBackend(ModelBackend):
     )
 
     param_specs = [
-        ParamSpec("max_epochs", "int", default=100, min=1, max=2000,
-                  label="最大训练轮数", desc="开启 early stopping，收敛后自动停止"),
+        ParamSpec("max_epochs", "int", default=None, auto=True, min=1, max=100000,
+                  label="最大训练轮数",
+                  desc="留空 = scvi 官方启发式 min(20000/细胞数×400, 400)；可用 SCVI_MAX_EPOCHS 覆盖"),
         ParamSpec("batch_size", "int", default=None, auto=True,
                   label="批大小", desc="留空=按显存与数据量自动决定"),
         ParamSpec("batch_key", "str", default="batch",
@@ -59,11 +74,25 @@ class ScVIBackend(ModelBackend):
 
     # ---------------- 依赖探测 ----------------
     def is_available(self) -> tuple:
+        """只探测包是否存在并读版本，**不真正 import**。
+
+        scvi-tools 会连带导入 jax / flax / lightning / pyro / numpyro，
+        冷启动约 7 秒；而 /api/models 每次页面加载都会调用本方法，
+        因此绝不能在这里 import。真正的导入推迟到训练子进程里（不阻塞门户）。
+        """
+        import importlib.metadata as md
+        import importlib.util
+
         try:
-            import scvi  # noqa: F401 惰性导入
+            if importlib.util.find_spec("scvi") is None:
+                return False, "未安装 scvi-tools（pip install scvi-tools>=1.1）"
         except Exception as e:
-            return False, f"未安装 scvi-tools（pip install scvi-tools>=1.1）：{e}"
-        return True, f"scvi-tools {getattr(scvi, '__version__', '?')}"
+            return False, f"scvi-tools 探测失败：{e}"
+        try:
+            version = md.version("scvi-tools")
+        except Exception:
+            version = "?"
+        return True, f"scvi-tools {version}"
 
     # ---------------- 参数 ----------------
     def resolve_config(self, obs_columns, n_cells: int, env: dict, overrides: dict = None) -> dict:
@@ -72,6 +101,9 @@ class ScVIBackend(ModelBackend):
         # 字段名是「用户可能想改」的核心项：记录命中情况，供日志与报告展示
         cfg["has_batch"] = cfg.get("batch_key") in obs
         cfg["has_cell_type"] = cfg.get("cell_type_key") in obs
+        # max_epochs 留空 => 按 scvi 官方启发式随细胞数自适应（不是固定值）
+        if not cfg.get("max_epochs"):
+            cfg["max_epochs"] = _max_epochs_heuristic(n_cells)
         return cfg
 
     # ---------------- 预处理阶段 ----------------
@@ -169,14 +201,16 @@ class ScVIBackend(ModelBackend):
             import torch  # noqa: E402
             accelerator = "gpu" if torch.cuda.is_available() else "cpu"
 
+        epochs = cfg.get("max_epochs")
         emit("training_log", {
-            "message": f"开始训练：max_epochs={cfg['max_epochs']}, "
+            "message": f"开始训练：max_epochs={epochs or 'scvi 自动'}, "
                        f"batch_size={cfg['batch_size']}, accelerator={accelerator}"
         })
-        kwargs = {"max_epochs": int(cfg["max_epochs"]),
-                  "batch_size": int(cfg["batch_size"]),
+        kwargs = {"batch_size": int(cfg["batch_size"]),
                   "accelerator": accelerator,
                   "early_stopping": True}
+        if epochs:
+            kwargs["max_epochs"] = int(epochs)
         if accelerator == "gpu":
             kwargs["devices"] = 1
         model.train(**kwargs)
@@ -191,7 +225,7 @@ class ScVIBackend(ModelBackend):
         model.save(model_dir, overwrite=True)
 
         return {
-            "epochs": cfg["max_epochs"],
+            "epochs": epochs,
             "model_dir": model_dir,
             "processed_dir": None,
         }

@@ -2,9 +2,9 @@
 name: scvi
 type: model
 display_name: scVI
-description: 单细胞变分自编码器，以负二项似然直接建模原始计数，擅长批次校正与低维表征，要求原始计数存入 layers counts
+description: 变分自编码器，擅长批次校正与低维表征
 params:
-  max_epochs: 100
+  max_epochs: auto
   batch_size: auto
   batch_key: batch
   cell_type_key: cell_type
@@ -30,7 +30,7 @@ batch_size_caps: 500=32; 2000=128
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `max_epochs` | 100 | 开启 early stopping，收敛后自动停止 |
+| `max_epochs` | auto | **不写死**：留空即用 scvi-tools 官方启发式，随细胞数自适应（见下）；开启 early stopping，收敛后自动停止 |
 | `batch_size` | auto | 见 frontmatter 查表；scVI 是轻量 VAE，可比 scLinformer 取更大值 |
 | `batch_key` | `batch` | obs 中的批次列名，不存在则关闭批次校正 |
 | `cell_type_key` | `cell_type` | obs 中的细胞类型列名 |
@@ -39,6 +39,48 @@ batch_size_caps: 500=32; 2000=128
 
 网络结构固定使用 scvi-tools 推荐默认：`n_latent=30, n_hidden=128, n_layers=2,
 gene_likelihood=nb, dropout_rate=0.1`（不暴露，避免过度调参）。
+
+### max_epochs 走官方启发式，不要写死
+
+scvi-tools 在 `model/base/_training_mixin.py` 里的逻辑是：
+
+```python
+if max_epochs is None:
+    max_epochs = get_max_epochs_heuristic(self.adata.n_obs)
+# scvi/model/_utils.py
+max_epochs = min(round(20000 / n_obs * 400), 400)   # 下限 1
+```
+
+即**细胞越多、轮数越少，上限 400**。所以本模型默认不设固定值，实际取值：
+
+| 细胞数 | max_epochs |
+|--------|-----------|
+| 100 | 400 |
+| 500 | 400 |
+| 5,000 | 400 |
+| 20,000 | 400 |
+| 69,249 | 116 |
+| 200,000 | 40 |
+
+想手动固定就用 `SCVI_MAX_EPOCHS=<n>`。本仓库在主进程里复刻了同一公式
+（`scvi.py::_max_epochs_heuristic`），目的是让日志与报告能显示真实轮数，
+同时避免主进程 import scvi（冷启动约 7 秒）。
+
+### 参数覆盖（与 scLinformer 完全隔离）
+
+本模型的参数**只认自己的前缀 `SCVI_`**，改动不会影响 scLinformer：
+
+| 想改什么 | 环境变量 |
+|---------|---------|
+| 最大训练轮数 | `SCVI_MAX_EPOCHS=400` |
+| 批大小 | `SCVI_BATCH_SIZE=128` |
+| 批次列名 | `SCVI_BATCH_KEY=Sample` |
+| 细胞类型列名 | `SCVI_CELL_TYPE_KEY=celltype` |
+| 高变基因数 | `SCVI_N_TOP_GENES=3000` |
+| 计算设备 | `SCVI_ACCELERATOR=cpu` |
+
+> 历史全局变量 `MODEL_EPOCHS` / `MODEL_BATCH_SIZE` 已废弃（会同时影响多个模型），
+> 服务启动时若检测到会打印告警。
 
 ## 三、流程
 

@@ -35,11 +35,25 @@ def run_pipeline(task_id: int = 1, dataset_id: int = 3,
 
     try:
         result = app.invoke(initial, config=config)
-        emit("pipeline_end", {"status": "success"})
-        return {"status": "success", "result": result}
     except Exception as e:
         emit("pipeline_failed", {"error": str(e)})
         return {"status": "failed", "error": str(e)}
+
+    # 注意：节点内部会捕获异常并路由到 handle_error，app.invoke 仍会正常返回，
+    # 因此不能无条件报 success —— 必须按各阶段状态汇总，否则训练/报告失败也会显示成功。
+    stages = {
+        "preprocess": result.get("preprocess_status"),
+        "training": result.get("training_status"),
+        "analyze": result.get("report_status"),
+    }
+    failed = [k for k, v in stages.items() if v != "success"]
+    if failed:
+        err = result.get("error") or f"以下阶段未成功：{', '.join(failed)}"
+        emit("pipeline_failed", {"error": err, "stages": stages})
+        return {"status": "failed", "error": err, "result": result, "stages": stages}
+
+    emit("pipeline_end", {"status": "success", "stages": stages})
+    return {"status": "success", "result": result, "stages": stages}
 
 
 def run(task_id: int = 1, dataset_id: int = 3, dataset_path: str = None, output_dir: str = None,

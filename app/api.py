@@ -9,6 +9,7 @@
 
 import asyncio
 import json
+import shutil
 import threading
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import db
+from app import config, db
 from app.event_emitter import snapshot
 from app.llm import llm_configured
 from app.main import run_pipeline
@@ -47,6 +48,45 @@ def _startup():
     # 模型注册表自检：模型实现与 SKILL.md 是否一致（不一致只告警，不影响启动）
     for problem in validate():
         print(f"[warn] 模型一致性自检：{problem}")
+    # 模型参数已按模型隔离：旧的全局变量不再生效，提示改用 {模型KEY}_{参数名}
+    for k, v in config.LEGACY_MODEL_ENV.items():
+        print(f"[warn] 环境变量 {k}={v} 已废弃且不再生效（参数已按模型隔离）；"
+              f"请改用 SCLINFORMER_EPOCHS / SCVI_MAX_EPOCHS / SCVI_BATCH_SIZE 等 模型KEY_参数名 形式")
+    try:
+        reconcile_tasks()
+    except Exception as e:
+        print(f"[warn] 任务状态对账失败：{e}")
+
+
+def reconcile_tasks():
+    """启动时对账：DB 里是 running、但内存里没有对应运行线程的任务 = 上次进程残留的僵尸。
+
+    结果写回数据库的动作只在流水线返回后执行一次，若服务中途被重启（或那次写库异常），
+    任务就会永远停在 running。这里按磁盘产物判断真实结果并修正状态。
+    """
+    for t in db.list_tasks():
+        proc = _parse_process(t.get("process"))
+        if (proc.get("status") or "") != "running":
+            continue
+        task_id = t["id"]
+        with _running_lock:
+            if task_id in _running:      # 真在跑，跳过
+                continue
+
+        out_dir = t.get("path") or ""
+        has_report = bool(out_dir) and (Path(out_dir) / "report.html").exists()
+        proc["status"] = "success" if has_report else "failed"
+        if has_report:
+            res = proc.get("result")
+            if not isinstance(res, dict):
+                res = {}
+                proc["result"] = res
+            res.setdefault("report", {})["report_url"] = f"/output/{task_id}/report.html"
+            res.setdefault("report_status", "success")
+        else:
+            proc["error"] = proc.get("error") or "任务未完成（服务进程在收尾前中断）"
+        db.update_task_process(task_id, json.dumps(proc, ensure_ascii=False, default=str))
+        print(f"[warn] 任务状态对账：#{task_id} running -> {proc['status']}")
 
 
 # ---------- 模型（注册表驱动，新增模型自动出现在这里） ----------
@@ -62,7 +102,12 @@ def api_models():
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    # no-store：避免浏览器按 ETag/Last-Modified 缓存 index.html，
+    # 否则改完前端刷新看到的是旧版本（"改了没变化"的根因）
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 # ---------- 数据集 ----------
@@ -93,12 +138,19 @@ def delete_dataset(dataset_id: int):
 def list_tasks():
     tasks = []
     for t in db.list_tasks():
+        proc = _parse_process(t["process"])
         tasks.append({
             "id": t["id"],
             "name": t["name"],
             "path": t["path"],
             "model": t.get("model") or default_key(),
-            "process": _parse_process(t["process"]),
+            "dataset_id": t.get("dataset_id"),
+            # 列表只回状态摘要：events 可能很大（单任务数百条），详情走 /api/tasks/{id}/state
+            "process": {
+                "status": proc.get("status") or "unknown",
+                "error": proc.get("error"),
+                "event_count": len(proc.get("events") or []),
+            },
             "create_time": str(t["create_time"]),
         })
     return {"tasks": tasks}
@@ -128,7 +180,8 @@ def run_task(body: RunIn):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"参数校验失败：{e}")
 
-    task_id = db.create_task(name=ds["name"], path="", model=backend.key)
+    task_id = db.create_task(name=ds["name"], path="", model=backend.key,
+                             dataset_id=body.dataset_id)
     task_name = f"{ds['name']}_{task_id}"
     output_dir = str(RUNTIME_TASK_DIR / str(task_id))
     db.update_task_meta(task_id, task_name, output_dir)
@@ -168,7 +221,17 @@ def task_state(task_id: int):
     t = db.get_task(task_id)
     if not t:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return _parse_process(t["process"])
+
+    process = _parse_process(t["process"])
+    # 运行中的任务：process 只在流水线结束时才落库，中途 DB 里的 events 是空的。
+    # 这里补上内存缓冲里的实时事件，否则「切到别的任务再切回来」日志会消失。
+    mem = snapshot(task_id)
+    if len(mem) > len(process.get("events") or []):
+        process["events"] = mem
+
+    with _running_lock:
+        process["running"] = task_id in _running
+    return process
 
 
 @app.get("/api/tasks/{task_id}/stream")
@@ -187,6 +250,34 @@ async def task_stream(task_id: int):
             await asyncio.sleep(0.3)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: int):
+    """删除任务：连同其输出目录（report/产物）一起清理。
+
+    - 运行中的任务拒绝删除（409），避免删到一半还在写文件；
+    - 只删 runtime/task 之下的目录，防止历史脏数据里的 path 指向别处被误删。
+    """
+    t = db.get_task(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    with _running_lock:
+        if task_id in _running:
+            raise HTTPException(status_code=409, detail="任务正在运行，请等待结束后再删除")
+
+    out_dir = (t.get("path") or "").strip()
+    if out_dir:
+        try:
+            p = Path(out_dir).resolve()
+            if RUNTIME_TASK_DIR.resolve() in p.parents:
+                shutil.rmtree(p, ignore_errors=True)
+        except Exception as e:
+            print(f"[warn] 删除任务输出目录失败（仅删库记录）：{e}")
+
+    db.delete_task(task_id)
+    return {"ok": True, "deleted_files": bool(out_dir)}
 
 
 # ---------- AI 聊天（DeepSeek） ----------

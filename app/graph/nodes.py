@@ -68,10 +68,11 @@ def analyze_node(state: dict):
 
 
 def handle_error_node(state: dict):
-    emit("pipeline_failed", {
-        "error": state.get("error", ""),
-        "current_stage": state.get("current_stage", ""),
-    })
+    """错误收敛节点：只把错误写回状态。
+
+    这里**不发** pipeline_failed —— 统一由 run_pipeline() 发出（那里能同时带上
+    各阶段状态 stages），否则前端时间线会出现两条重复的失败记录。
+    """
     return {"error": state.get("error", "")}
 
 

@@ -1,380 +1,656 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RNAgent 单细胞分析 Agent</title>
-  <style>
-    :root { --bg:#f5f6f8; --card:#fff; --line:#e5e7eb; --text:#111827; --muted:#6b7280;
-            --accent:#2563eb; --ok:#16a34a; --err:#dc2626; --warn:#d97706; }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
-           background: var(--bg); color: var(--text); font-size: 14px; }
-    header { background: var(--card); border-bottom: 1px solid var(--line); padding: 12px 20px; }
-    header h1 { font-size: 18px; }
-    header p { color: var(--muted); font-size: 12px; margin-top: 2px; }
-    .layout { display: grid; grid-template-columns: 300px 1fr 300px; gap: 14px; padding: 14px; height: calc(100vh - 70px); }
-    .col { display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
-    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
-    .card h2 { font-size: 13px; margin-bottom: 10px; color: var(--muted); font-weight: 600; }
-    input, select, button, textarea { width: 100%; padding: 8px 10px; border-radius: 7px; border: 1px solid var(--line); font-size: 13px; }
-    button { background: var(--accent); color: #fff; border: none; cursor: pointer; font-weight: 600; }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
-    button.danger { background: transparent; color: var(--err); border: 1px solid var(--err); }
-    .row { display: flex; gap: 6px; margin-bottom: 6px; }
-    .check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
-    .check input { width: auto; }
-    .list { overflow-y: auto; max-height: 45%; }
-    .item { padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; margin-bottom: 8px; }
-    .item:hover { border-color: var(--accent); }
-    .item.active { border-color: var(--accent); background: #eff6ff; }
-    .item .title { font-weight: 600; font-size: 13px; }
-    .item .sub { color: var(--muted); font-size: 12px; word-break: break-all; }
-    .item .actions { margin-top: 6px; display: flex; gap: 6px; }
-    .item .actions button { padding: 4px 10px; font-size: 12px; width: auto; }
-    .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-    .badge.running { background: #eef2ff; color: var(--accent); }
-    .badge.success { background: #ecfdf5; color: var(--ok); }
-    .badge.failed { background: #fef2f2; color: var(--err); }
-    .badge.unknown { background: #f3f4f6; color: var(--muted); }
-    .badge.model { background: #eef2ff; color: #4f46e5; }
-    /* 模型参数表单（由 /api/models 的 Schema 动态生成） */
-    .param { margin-bottom: 8px; }
-    .param label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
-    .param .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
-    details.adv { margin-top: 8px; }
-    details.adv summary { font-size: 12px; color: var(--muted); cursor: pointer; }
-    .stages { display: flex; gap: 8px; }
-    .stage { flex: 1; padding: 10px; border: 1px solid var(--line); border-radius: 8px; text-align: center; color: var(--muted); background: var(--card); font-size: 12px; }
-    .stage.done { border-color: var(--ok); color: var(--ok); }
-    .stage.active { border-color: var(--accent); color: var(--accent); }
-    .stage.failed { border-color: var(--err); color: var(--err); }
-    .timeline { flex: 1; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; font-family: Consolas, monospace; font-size: 12px; }
-    .tl-item { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px dashed #f1f1f1; }
-    .tl-time { color: var(--muted); white-space: nowrap; }
-    .tl-tag { font-weight: 600; min-width: 100px; }
-    .tl-tag.stage_start { color: var(--accent); }
-    .tl-tag.stage_end { color: var(--ok); }
-    .tl-tag.stage_error, .tl-tag.pipeline_failed { color: var(--err); }
-    .tl-tag.tool_call { color: var(--warn); }
-    .tl-tag.tool_result { color: var(--muted); }
-    .tl-detail { color: var(--muted); word-break: break-all; }
-    .empty { color: var(--muted); padding: 20px; text-align: center; }
-    /* 聊天 */
-    .chat { flex: 1; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
-    .chat-box { flex: 1; overflow-y: auto; }
-    .chat-msg { margin-bottom: 10px; }
-    .chat-msg .who { font-size: 11px; color: var(--muted); }
-    .chat-msg .bubble { padding: 8px 10px; border-radius: 10px; margin-top: 2px; white-space: pre-wrap; }
-    .chat-msg.user .bubble { background: #eff6ff; }
-    .chat-msg.ai .bubble { background: #f3f4f6; }
-    /* modal */
-    .modal-mask { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 50; align-items: center; justify-content: center; }
-    .modal-mask.show { display: flex; }
-    .modal { background: #fff; border-radius: 12px; width: 80vw; max-width: 1100px; max-height: 85vh; overflow-y: auto; padding: 20px; }
-    .modal h3 { margin-bottom: 12px; }
-    .modal .close { float: right; cursor: pointer; color: var(--muted); font-size: 20px; }
-    .modal pre { white-space: pre-wrap; font-family: inherit; font-size: 13px; }
-    .metrics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-    .metric { background: #f9fafb; border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; }
-    .metric b { font-size: 14px; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RNAgent · 单细胞分析 Agent</title>
+<style>
+  :root{
+    --bg:#eef1f7;
+    --panel:#ffffff;
+    --line:#e3e8f0;
+    --line-soft:#f1f4f9;
+    --text:#0f172a;
+    --muted:#64748b;
+    --faint:#94a3b8;
+    --accent:#4f46e5;
+    --accent-2:#6366f1;
+    --accent-soft:#eef2ff;
+    --ok:#059669;   --ok-soft:#ecfdf5;
+    --err:#dc2626;  --err-soft:#fef2f2;
+    --warn:#d97706; --warn-soft:#fffbeb;
+    --r-lg:16px; --r-md:11px; --r-sm:8px;
+    --sh-1:0 1px 2px rgba(15,23,42,.04);
+    --sh-2:0 1px 2px rgba(15,23,42,.04), 0 12px 28px -16px rgba(15,23,42,.22);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:"Inter","Segoe UI","PingFang SC","Microsoft YaHei",-apple-system,sans-serif;
+    background:
+      radial-gradient(1200px 500px at 12% -10%, #e6ebff 0%, transparent 60%),
+      radial-gradient(900px 420px at 95% 0%, #e7f7f2 0%, transparent 55%),
+      var(--bg);
+    color:var(--text); font-size:14px; -webkit-font-smoothing:antialiased;
+  }
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:999px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:#94a3b8;background-clip:content-box}
+
+  /* ---------- 顶栏 ---------- */
+  header.topbar{
+    position:sticky; top:0; z-index:30;
+    display:flex; align-items:center; gap:14px;
+    padding:14px 22px;
+    background:rgba(255,255,255,.82);
+    backdrop-filter:saturate(180%) blur(14px);
+    border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex;align-items:center;gap:11px}
+  .logo{
+    width:36px;height:36px;border-radius:11px;flex:0 0 auto;
+    background:linear-gradient(135deg,#4f46e5,#2a86c4);
+    display:grid;place-items:center;color:#fff;font-weight:800;font-size:17px;
+    box-shadow:0 6px 16px -6px rgba(79,70,229,.7);
+  }
+  .brand h1{font-size:16.5px;font-weight:700;letter-spacing:.2px}
+  .brand p{font-size:12px;color:var(--muted);margin-top:1px}
+  .topbar-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .pill{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:5px 11px;border-radius:999px;font-size:12px;font-weight:600;
+    background:var(--line-soft);color:var(--muted);border:1px solid var(--line);
+  }
+  .pill.ok{background:var(--ok-soft);color:var(--ok);border-color:#bbe7d5}
+
+  /* ---------- 布局 ---------- */
+  .layout{
+    display:grid; grid-template-columns:330px minmax(0,1fr) 330px;
+    gap:16px; padding:18px 22px 22px;
+    height:calc(100vh - 66px);
+  }
+  .col{display:flex;flex-direction:column;gap:14px;min-height:0}
+  /* 左列：整体滚动，卡片按内容高度排列，内部列表不再各自滚动（避免嵌套滚动条 + 内容被裁） */
+  .col.scroll{overflow-y:auto;overflow-x:hidden;padding-right:5px}
+  .col.scroll > .card{flex:0 0 auto}
+  .col.scroll .list{overflow:visible;max-height:none}
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r-lg);
+    padding:16px; box-shadow:var(--sh-1); display:flex; flex-direction:column; min-height:0;
+  }
+  .card > h2{
+    display:flex;align-items:center;gap:8px;
+    font-size:13px;font-weight:700;color:#334155;letter-spacing:.3px;
+    margin-bottom:13px; padding-bottom:0;
+  }
+  .card > h2 .count{
+    margin-left:auto;font-size:11.5px;font-weight:600;color:var(--faint);
+    background:var(--line-soft);border-radius:999px;padding:2px 9px;
+  }
+
+  /* ---------- 控件 ---------- */
+  input[type=text],input:not([type]),textarea,select{
+    width:100%;padding:9px 11px;border-radius:var(--r-sm);
+    border:1px solid var(--line);background:#fbfcfe;font-size:13px;color:var(--text);
+    font-family:inherit;transition:border-color .15s, box-shadow .15s, background .15s;
+  }
+  input:focus,textarea:focus,select:focus{
+    outline:none;border-color:var(--accent-2);background:#fff;
+    box-shadow:0 0 0 3px rgba(99,102,241,.13);
+  }
+  button{
+    width:100%;padding:9px 14px;border-radius:var(--r-sm);border:none;cursor:pointer;
+    background:linear-gradient(180deg,var(--accent-2),var(--accent));color:#fff;
+    font-size:13px;font-weight:600;font-family:inherit;
+    box-shadow:0 1px 2px rgba(79,70,229,.25),0 8px 18px -12px rgba(79,70,229,.9);
+    transition:transform .12s, filter .15s;
+  }
+  button:hover:not(:disabled){filter:brightness(1.06)}
+  button:active:not(:disabled){transform:translateY(1px)}
+  button:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
+  button.ghost{
+    background:var(--accent);color:#fff;border:1px solid var(--accent);box-shadow:none;
+  }
+  button.ghost:hover{background:#4338ca}
+  button.danger{
+    background:var(--err);color:#fff;border:1px solid var(--err);box-shadow:none;
+  }
+  button.danger:hover{background:#b91c1c}
+
+  /* ---------- 模型卡片 ---------- */
+  .models{display:flex;flex-direction:column;gap:9px}
+  .model-card{
+    position:relative;display:flex;gap:11px;align-items:flex-start;
+    padding:12px 13px;border:1.5px solid var(--line);border-radius:var(--r-md);
+    background:#fbfcfe;cursor:pointer;transition:all .16s;
+  }
+  .model-card:hover{border-color:#c7cdf0;background:#fff}
+  .model-card input{position:absolute;opacity:0;pointer-events:none}
+  .model-card .radio{
+    flex:0 0 auto;width:16px;height:16px;border-radius:50%;
+    border:2px solid #cbd5e1;margin-top:1px;background:#fff;transition:all .16s;
+  }
+  .model-card.sel{border-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 3px rgba(99,102,241,.1)}
+  .model-card.sel .radio{border-color:var(--accent);border-width:5px}
+  .model-card.dis{opacity:.55;cursor:not-allowed}
+  .mc-name{font-weight:700;font-size:13.5px;display:flex;align-items:center;gap:7px}
+  .mc-desc{
+    font-size:11.8px;color:var(--muted);line-height:1.55;margin-top:4px;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  }
+  .mc-tag{
+    font-size:10.5px;font-weight:700;padding:1.5px 7px;border-radius:999px;
+    background:var(--ok-soft);color:var(--ok);
+  }
+  .mc-tag.off{background:var(--err-soft);color:var(--err)}
+  .auto-note{
+    margin-top:11px;display:flex;gap:7px;align-items:flex-start;
+    font-size:11.5px;color:var(--muted);background:var(--line-soft);
+    border-radius:var(--r-sm);padding:9px 11px;line-height:1.55;
+  }
+
+  /* ---------- 列表 ---------- */
+  .list{overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:9px;padding-right:2px}
+  .item{
+    border:1px solid var(--line);border-radius:var(--r-md);padding:11px 12px;
+    background:#fbfcfe;transition:border-color .15s, background .15s, box-shadow .15s;
+  }
+  .item:hover{border-color:#c7cdf0;background:#fff}
+  .item.active{border-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 3px rgba(99,102,241,.1)}
+  .item .row1{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .item .title{font-weight:650;font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .sub{color:var(--faint);font-size:11.5px;margin-top:4px;word-break:break-all;line-height:1.5}
+  .item .actions{margin-top:9px;display:flex;gap:7px}
+  .item .actions button{width:auto;padding:5px 12px;font-size:12px}
+  .badge{display:inline-block;flex:0 0 auto;padding:2px 9px;border-radius:999px;font-size:10.5px;font-weight:700;letter-spacing:.2px}
+  .badge.running{background:var(--accent-soft);color:var(--accent)}
+  .badge.success{background:var(--ok-soft);color:var(--ok)}
+  .badge.failed{background:var(--err-soft);color:var(--err)}
+  .badge.unknown{background:var(--line-soft);color:var(--muted)}
+  .badge.model{background:#f5f3ff;color:#7c3aed;border:1px solid #e9e5ff}
+  /* 模型标签：只显示模型名（scVI / scLinformer），颜色区分 */
+  .chip-model{
+    display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;
+    padding:2px 9px;border-radius:7px;font-size:11px;font-weight:700;
+    background:#f5f3ff;color:#7c3aed;border:1px solid #e9e5ff;
+  }
+  .empty{color:var(--faint);padding:26px 12px;text-align:center;font-size:12.5px}
+
+  /* ---------- 阶段步进器 ---------- */
+  .stepper{
+    display:flex;align-items:center;gap:0;padding:16px 18px;
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-1);
+  }
+  .step{display:flex;align-items:center;gap:9px;color:var(--faint);font-size:12.5px;font-weight:600;transition:color .2s}
+  .step .dot{
+    width:24px;height:24px;border-radius:50%;display:grid;place-items:center;
+    background:var(--line-soft);color:var(--faint);font-size:11.5px;font-weight:800;
+    border:1.5px solid var(--line);transition:all .2s;
+  }
+  .step.active{color:var(--accent)} .step.active .dot{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+  .step.done{color:var(--ok)} .step.done .dot{background:var(--ok-soft);border-color:var(--ok);color:var(--ok)}
+  .step.failed{color:var(--err)} .step.failed .dot{background:var(--err-soft);border-color:var(--err);color:var(--err)}
+  .bar{flex:1;height:2px;background:var(--line);margin:0 14px;border-radius:999px}
+
+  /* ---------- 时间线 ---------- */
+  .log-head{
+    display:flex;align-items:center;gap:10px;margin-bottom:11px;
+  }
+  .log-head h2{font-size:13px;font-weight:700;color:#334155}
+  .log-head .sub{font-size:11.5px;color:var(--faint);margin-left:auto;font-variant-numeric:tabular-nums}
+  .timeline{
+    flex:1;overflow-y:auto;padding:4px 2px 4px 0;
+    font-family:"JetBrains Mono",Consolas,"Cascadia Mono",monospace;font-size:12px;
+  }
+  .tl-item{
+    display:grid;grid-template-columns:58px 96px 1fr;gap:10px;align-items:start;
+    padding:5px 8px;border-radius:var(--r-sm);transition:background .12s;
+  }
+  .tl-item:hover{background:rgba(241,245,249,.75)}
+  .tl-time{color:var(--faint);font-variant-numeric:tabular-nums;padding-top:2px}
+  .tl-tag{
+    font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;
+    background:var(--line-soft);color:var(--muted);text-align:center;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .tl-tag.stage_start{background:var(--accent-soft);color:var(--accent)}
+  .tl-tag.stage_end{background:var(--ok-soft);color:var(--ok)}
+  .tl-tag.stage_error,.tl-tag.pipeline_failed{background:var(--err-soft);color:var(--err)}
+  .tl-tag.training_monitor{background:var(--warn-soft);color:var(--warn)}
+  .tl-tag.pipeline_start,.tl-tag.pipeline_end{background:#e0f2fe;color:#0369a1}
+  .tl-detail{color:#475569;word-break:break-word;line-height:1.6;white-space:pre-wrap}
+
+  /* ---------- 聊天 ---------- */
+  .chat{flex:1;min-height:0}
+  .chat-box{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding-right:2px;margin-bottom:11px}
+  .chat-msg{display:flex;flex-direction:column;gap:4px;max-width:100%}
+  .chat-msg .who{font-size:11px;color:var(--faint);font-weight:600}
+  .chat-msg.user{align-items:flex-end}
+  .chat-msg .bubble{
+    padding:9px 12px;border-radius:12px;white-space:pre-wrap;line-height:1.62;
+    font-size:12.8px;word-break:break-word;
+  }
+  .chat-msg.user .bubble{background:linear-gradient(180deg,var(--accent-2),var(--accent));color:#fff;border-bottom-right-radius:4px}
+  .chat-msg.ai .bubble{background:var(--line-soft);color:#334155;border-bottom-left-radius:4px}
+  .chat-input{display:flex;gap:8px}
+  .chat-input input{flex:1}
+  .chat-input button{width:auto;padding:9px 16px;flex:0 0 auto}
+
+  @media (max-width:1180px){
+    .layout{grid-template-columns:1fr;height:auto}
+    .col{min-height:auto}
+    .list{max-height:320px}
+    .timeline{max-height:460px}
+  }
+</style>
 </head>
 <body>
-  <header>
-    <h1>RNAgent 单细胞 RNA 分析 Agent</h1>
-    <p>LangGraph 编排 + DeepSeek + 本地 MySQL；预处理 -> 所选模型训练评测 -> 结果生成 HTML 报告</p>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">R</div>
+      <div>
+        <h1>RNAgent</h1>
+        <p>单细胞 RNA 分析 Agent · 预处理 → 模型训练 → 报告</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="pill" id="modelPill">模型加载中…</span>
+    </div>
   </header>
 
   <div class="layout">
-    <!-- 左列：模型 + 数据集 + 任务管理 -->
-    <div class="col">
+    <!-- 左列：模型 + 数据集 + 任务（整体可滚动） -->
+    <div class="col scroll">
       <div class="card">
         <h2>分析模型</h2>
-        <select id="modelSel"></select>
-        <div id="modelDesc" style="color:var(--muted);font-size:12px;margin:6px 0"></div>
-        <div id="modelParams"></div>
+        <div class="models" id="modelCards"></div>
+        <div class="auto-note">
+          <span>⚙</span>
+          <span>参数全部自动决策，无需填写。</span>
+        </div>
       </div>
+
       <div class="card">
-        <h2>数据集管理</h2>
-        <div class="row"><input id="dsName" placeholder="数据集名称" /><input id="dsPath" placeholder="本地路径 (如 D:\\data\\demo.h5ad)" /></div>
-        <button id="dsCreate">新建数据集</button>
+        <h2>数据集 <span class="count" id="dsCount">0</span></h2>
+        <input id="dsName" placeholder="数据集名称" />
         <div style="height:8px"></div>
+        <input id="dsPath" placeholder="本地路径，如 D:\data\demo.h5ad" />
+        <div style="height:10px"></div>
+        <button id="dsCreate">添加数据集</button>
+        <div style="height:12px"></div>
         <div class="list" id="dsList"></div>
       </div>
-      <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden">
-        <h2>任务管理</h2>
-        <div class="list" id="taskList" style="flex:1;min-height:0;max-height:none"></div>
+
+      <div class="card">
+        <h2>任务 <span class="count" id="taskCount">0</span></h2>
+        <div class="list" id="taskList"></div>
       </div>
     </div>
 
-    <!-- 中列：进度 + 指令流程 -->
+    <!-- 中列：进度 -->
     <div class="col">
-      <div class="stages">
-        <div class="stage" id="st-preprocess">① 数据预处理</div>
-        <div class="stage" id="st-training">② 模型训练</div>
-        <div class="stage" id="st-analyze">③ 结果分析</div>
+      <div class="stepper">
+        <div class="step" id="st-preprocess"><span class="dot">1</span><span>数据预处理</span></div>
+        <div class="bar"></div>
+        <div class="step" id="st-training"><span class="dot">2</span><span>模型训练</span></div>
+        <div class="bar"></div>
+        <div class="step" id="st-analyze"><span class="dot">3</span><span>结果分析</span></div>
       </div>
-      <div class="timeline" id="timeline"><div class="empty">选择数据集点「开始分析」，或点击左侧任务查看指令流程</div></div>
+      <div class="card" style="flex:1">
+        <div class="log-head">
+          <h2>执行日志</h2>
+          <span class="sub" id="logSub">等待任务</span>
+        </div>
+        <div class="timeline" id="timeline">
+          <div class="empty">选择数据集点「开始分析」，或点击左侧任务查看历史流程</div>
+        </div>
+      </div>
     </div>
 
-    <!-- 右列：AI 聊天 -->
+    <!-- 右列：AI 助手 -->
     <div class="col">
       <div class="card chat">
         <h2>AI 助手</h2>
-        <div class="chat-box" id="chatBox"><div class="empty">问我单细胞分析相关问题</div></div>
-        <div class="row">
-          <input id="chatInput" placeholder="输入问题..." />
-          <button id="chatSend" style="width:auto">发送</button>
+        <div class="chat-box" id="chatBox"><div class="empty">关于单细胞分析、指标解读、任务结果，都可以问我</div></div>
+        <div class="chat-input">
+          <input id="chatInput" placeholder="输入问题…" />
+          <button id="chatSend">发送</button>
         </div>
       </div>
     </div>
   </div>
 
-  <script>
-    let currentTask = null, es = null;
-    let MODELS = [], DEFAULT_MODEL = 'sclinformer';
+<script>
+  let currentTask = null, es = null;
+  let MODELS = [], DEFAULT_MODEL = "sclinformer", selectedModel = null;
+  let TASKS = [];   // 任务列表缓存，供 openTask 查模型等信息
 
-    // ---------- 模型（选项与参数表单全部来自 /api/models 的 Schema）----------
-    async function loadModels() {
-      const r = await fetch('/api/models'); const d = await r.json();
-      MODELS = d.models || [];
-      DEFAULT_MODEL = d.default || (MODELS[0] && MODELS[0].key) || 'sclinformer';
-      const sel = document.getElementById('modelSel');
-      sel.innerHTML = '';
-      MODELS.forEach(m => {
-        const o = document.createElement('option');
-        o.value = m.key;
-        o.textContent = m.available ? m.name : `${m.name}（不可用）`;
-        o.disabled = !m.available;
-        if (m.key === DEFAULT_MODEL) o.selected = true;
-        sel.appendChild(o);
-      });
-      if (sel.value && !MODELS.find(m => m.key === sel.value && m.available)) {
-        const first = MODELS.find(m => m.available);
-        if (first) sel.value = first.key;
-      }
-      sel.onchange = renderModelForm;
-      (d.warnings || []).forEach(w => console.warn('[models]', w));
-      renderModelForm();
-    }
+  /** 模型 key -> 展示名；未知返回 key 本身，空返回「未知模型」 */
+  function modelLabel(key) {
+    if (!key) return "未知模型";
+    const m = MODELS.find(x => x.key === key);
+    return (m && m.name) || key;
+  }
 
-    function currentModel() {
-      const key = document.getElementById('modelSel').value;
-      return MODELS.find(m => m.key === key) || MODELS[0];
-    }
+  /* ---------------- 模型（参数不暴露给用户，全部自动决策） ---------------- */
+  async function loadModels() {
+    const d = await (await fetch("/api/models")).json();
+    MODELS = d.models || [];
+    DEFAULT_MODEL = d.default || (MODELS[0] && MODELS[0].key) || "sclinformer";
+    const usable = MODELS.filter(m => m.available);
+    selectedModel = (usable.find(m => m.key === DEFAULT_MODEL) || usable[0] || MODELS[0] || {}).key || null;
 
-    function renderModelForm() {
-      const m = currentModel();
-      if (!m) return;
-      document.getElementById('modelDesc').textContent =
-        (m.description || '') + (m.available ? '' : ` —— 不可用：${m.reason || ''}`);
-
-      const box = document.getElementById('modelParams');
-      box.innerHTML = '';
-      const build = (p) => {
-        const id = 'p_' + p.name;
-        const wrap = document.createElement('div');
-        wrap.className = 'param';
-        if (p.type === 'bool') {
-          wrap.innerHTML = `<label>${esc(p.label)}</label><select id="${id}">` +
-            (p.auto ? '<option value="">自动</option>' : '') +
-            '<option value="1">开启</option><option value="0">关闭</option></select>';
-          const s = wrap.querySelector('select');
-          s.value = p.default === true ? '1' : (p.default === false ? '0' : '');
-        } else if (p.type === 'enum') {
-          wrap.innerHTML = `<label>${esc(p.label)}</label><select id="${id}">` +
-            (p.choices || []).map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('') +
-            '</select>';
-          const s = wrap.querySelector('select');
-          if (p.default != null) s.value = p.default;
-        } else {
-          const attrs = [];
-          if (p.min != null) attrs.push(`min="${p.min}"`);
-          if (p.max != null) attrs.push(`max="${p.max}"`);
-          const val = (p.auto || p.default == null) ? '' : p.default;
-          wrap.innerHTML = `<label>${esc(p.label)}${p.auto ? '（留空自动）' : ''}</label>` +
-            `<input type="number" id="${id}" ${attrs.join(' ')} placeholder="${p.auto ? '自动' : ''}" value="${esc(val)}">`;
-        }
-        if (p.desc) {
-          const h = document.createElement('div');
-          h.className = 'hint'; h.textContent = p.desc; wrap.appendChild(h);
-        }
-        return wrap;
+    const box = document.getElementById("modelCards");
+    box.innerHTML = "";
+    MODELS.forEach(m => {
+      const el = document.createElement("label");
+      el.className = "model-card" + (m.key === selectedModel ? " sel" : "") + (m.available ? "" : " dis");
+      el.innerHTML =
+        `<input type="radio" name="model" value="${esc(m.key)}" ${m.available ? "" : "disabled"} ${m.key === selectedModel ? "checked" : ""}>
+         <span class="radio"></span>
+         <span>
+           <span class="mc-name">${esc(m.name)}
+             <span class="mc-tag ${m.available ? "" : "off"}">${m.available ? "可用" : "不可用"}</span>
+           </span>
+           <span class="mc-desc">${esc(m.available ? (m.description || "") : (m.reason || "环境未就绪"))}</span>
+         </span>`;
+      el.onclick = () => {
+        if (!m.available) return;
+        selectedModel = m.key;
+        box.querySelectorAll(".model-card").forEach(c => c.classList.remove("sel"));
+        el.classList.add("sel");
       };
+      box.appendChild(el);
+    });
 
-      (m.params || []).filter(p => !p.advanced).forEach(p => box.appendChild(build(p)));
-      const adv = (m.params || []).filter(p => p.advanced);
-      if (adv.length) {
-        const det = document.createElement('details');
-        det.className = 'adv';
-        det.innerHTML = `<summary>高级参数（${adv.length}）</summary>`;
-        adv.forEach(p => det.appendChild(build(p)));
-        box.appendChild(det);
-      }
-    }
+    const ok = usable.length;
+    document.getElementById("modelPill").className = "pill" + (ok ? " ok" : "");
+    document.getElementById("modelPill").textContent = ok ? `${ok} 个模型可用` : "无可用模型";
+    (d.warnings || []).forEach(w => console.warn("[models]", w));
+  }
 
-    function collectParams() {
-      const m = currentModel(); const out = {};
-      (m.params || []).forEach(p => {
-        const el = document.getElementById('p_' + p.name);
-        if (!el) return;
-        const v = el.value;
-        if (v === '' || v == null) return;          // 留空 = 交给默认值 / 自动决策
-        out[p.name] = (p.type === 'int' || p.type === 'float') ? Number(v) : v;
-      });
-      return out;
-    }
+  function currentModel() {
+    return MODELS.find(m => m.key === selectedModel) || MODELS[0];
+  }
 
-    async function loadDatasets() {
-      const r = await fetch('/api/datasets'); const d = await r.json();
-      const box = document.getElementById('dsList');
-      if (!d.datasets.length) { box.innerHTML = '<div class="empty">暂无数据集</div>'; return; }
-      box.innerHTML = '';
-      d.datasets.forEach(ds => {
-        const el = document.createElement('div'); el.className = 'item';
-        el.innerHTML = `<div class="title">#${ds.id} ${esc(ds.name)}</div>
-          <div class="sub">${esc(ds.path)}</div>
-          <div class="actions"><button onclick="startAnalysis(${ds.id})">开始分析</button></div>`;
-        box.appendChild(el);
-      });
-    }
+  /* ---------------- 数据集 ---------------- */
+  async function loadDatasets() {
+    const d = await (await fetch("/api/datasets")).json();
+    const box = document.getElementById("dsList");
+    document.getElementById("dsCount").textContent = d.datasets.length;
+    if (!d.datasets.length) { box.innerHTML = '<div class="empty">暂无数据集</div>'; return; }
+    box.innerHTML = "";
+    d.datasets.forEach(ds => {
+      const el = document.createElement("div");
+      el.className = "item";
+      el.innerHTML =
+        `<div class="row1"><span class="title">#${ds.id} ${esc(ds.name)}</span></div>
+         <div class="sub">${esc(ds.path)}</div>
+         <div class="actions">
+           <button data-run="${ds.id}">开始分析</button>
+           <button class="ghost danger" data-del="${ds.id}">删除</button>
+         </div>`;
+      el.querySelector("[data-run]").onclick = () => startAnalysis(ds.id);
+      el.querySelector("[data-del]").onclick = async e => {
+        e.stopPropagation();
+        if (!confirm(`删除数据集 #${ds.id}「${ds.name}」？\n已跑过的任务记录会保留，但会显示「数据集已删除」。`)) return;
+        const r = await fetch(`/api/datasets/${ds.id}`, { method: "DELETE" });
+        if (!r.ok) { alert("删除失败"); return; }
+        loadDatasets();
+      };
+      box.appendChild(el);
+    });
+  }
 
-    async function loadTasks() {
-      const r = await fetch('/api/tasks'); const d = await r.json();
-      const box = document.getElementById('taskList');
-      if (!d.tasks.length) { box.innerHTML = '<div class="empty">暂无任务</div>'; return; }
-      box.innerHTML = '';
-      d.tasks.forEach(t => {
-        const status = (t.process && t.process.status) || 'unknown';
-        const el = document.createElement('div');
-        el.className = 'item' + (currentTask === t.id ? ' active' : '');
-        const modelName = ((MODELS.find(x => x.key === t.model) || {}).name) || t.model || '';
-        el.innerHTML = `<div class="title">#${t.id} ${esc(t.name)} <span class="badge ${status}">${status}</span>${modelName ? ` <span class="badge model">${esc(modelName)}</span>` : ''}</div>
-          <div class="sub">${esc(t.path || '')}</div>
-          <div class="actions">
-            <button data-result="${t.id}">查看结果</button>
-          </div>`;
-        el.style.cursor = 'pointer';
-        el.onclick = () => openTask(t.id);
-        box.appendChild(el);
-      });
-      box.querySelectorAll('[data-result]').forEach(b => b.onclick = (e) => { e.stopPropagation(); showResult(Number(b.dataset.result)); });
-    }
+  document.getElementById("dsCreate").onclick = async () => {
+    const name = document.getElementById("dsName").value.trim();
+    const path = document.getElementById("dsPath").value.trim();
+    if (!name || !path) { alert("请填写数据集名称和本地路径"); return; }
+    const r = await fetch("/api/datasets", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, path })
+    });
+    if (!r.ok) { alert("创建失败"); return; }
+    document.getElementById("dsName").value = "";
+    document.getElementById("dsPath").value = "";
+    loadDatasets();
+  };
 
-    document.getElementById('dsCreate').onclick = async () => {
-      const name = document.getElementById('dsName').value.trim();
-      const path = document.getElementById('dsPath').value.trim();
-      if (!name || !path) { alert('请填写数据集名称和本地路径'); return; }
-      await fetch('/api/datasets', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name, path}) });
-      document.getElementById('dsName').value = ''; document.getElementById('dsPath').value = '';
-      loadDatasets();
-    };
-
-    function resetStages() { ['preprocess','training','analyze'].forEach(s => document.getElementById('st-'+s).className = 'stage'); }
-    function setStage(s, cls) { document.getElementById('st-'+s).className = 'stage ' + cls; }
-    function applyStage(ev) {
-      if (ev.event === 'stage_start') setStage(ev.stage, 'active');
-      if (ev.event === 'stage_end') setStage(ev.stage, 'done');
-      if (ev.event === 'stage_error') setStage(ev.stage, 'failed');
-      // 失败发生在哪个阶段就高亮哪个（preprocess/training/analyze）
-      if (ev.event === 'pipeline_failed' && ev.current_stage) setStage(ev.current_stage, 'failed');
-    }
-    function clearTimeline() { const tl = document.getElementById('timeline'); tl.innerHTML = ''; }
-    function appendEvent(ev) {
-      const tl = document.getElementById('timeline');
-      if (tl.querySelector('.empty')) tl.innerHTML = '';
-      const div = document.createElement('div'); div.className = 'tl-item';
-      const t = ev.ts ? new Date(ev.ts*1000).toLocaleTimeString() : '';
-      let detail = '';
-      if (ev.message) detail = ev.message;
-      if (ev.event === 'tool_result' && ev.result) detail += ' → ' + JSON.stringify(ev.result);
-      if (ev.event === 'stage_error' || ev.event === 'pipeline_failed') detail += ' ' + (ev.error || '');
-      if (ev.event === 'stage_end') detail = ev.report_url ? ('报告: ' + ev.report_url) : ((ev.tools||[]).join(', '));
-      div.innerHTML = `<span class="tl-time">${t}</span><span class="tl-tag ${ev.event}">${ev.event}</span><span class="tl-detail">${esc(detail)}</span>`;
-      tl.appendChild(div); tl.scrollTop = tl.scrollHeight;
-    }
-
-    async function startAnalysis(datasetId) {
-      resetStages(); clearTimeline();
-      const m = currentModel();
-      const r = await fetch('/api/tasks/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ dataset_id: datasetId, model: m && m.key, params: collectParams() }) });
-      const d = await r.json();
-      if (!r.ok) { alert((d && d.detail) || '启动分析失败'); return; }
-      currentTask = d.task_id;
-      loadTasks();
-      if (es) es.close();
-      es = new EventSource(`/api/tasks/${d.task_id}/stream`);
-      es.onmessage = m => { const ev = JSON.parse(m.data); appendEvent(ev); applyStage(ev);
-        if (ev.event === 'pipeline_end' || ev.event === 'pipeline_failed') { es.close(); es = null; loadTasks(); } };
-    }
-
-    // 点击任务列表加载旧任务流程（修复跳转 bug）
-    async function openTask(taskId) {
-      currentTask = taskId; loadTasks();
-      resetStages(); clearTimeline();
-      const r = await fetch(`/api/tasks/${taskId}/state`); const s = await r.json();
-      const events = s.events || [];
-      if (!events.length) { document.getElementById('timeline').innerHTML = '<div class="empty">该任务暂无过程记录</div>'; }
-      events.forEach(ev => { appendEvent(ev); applyStage(ev); });
-      // 依据状态修正阶段高亮
-      if (s.status === 'success') ['preprocess','training','analyze'].forEach(x => setStage(x, 'done'));
-    }
-
-    async function showResult(taskId) {
-      // 同步打开空白页，避免被浏览器弹窗拦截；再根据状态跳转或关闭
-      const win = window.open('', '_blank');
-      const r = await fetch(`/api/tasks/${taskId}/state`); const s = await r.json();
-      if (s.status === 'success') {
-        if (win) win.location.href = `/output/${taskId}/report.html`;
-      } else {
-        if (win) win.close();
-        alert(s.status === 'failed' ? `执行失败：${s.error || ''}` : '任务仍在运行，请稍后再查看结果');
-      }
-    }
-
-    // 聊天（流式输出）
-    function addChat(who, text) {
-      const box = document.getElementById('chatBox');
-      if (box.querySelector('.empty')) box.innerHTML = '';
-      const div = document.createElement('div'); div.className = 'chat-msg ' + who;
-      div.innerHTML = `<div class="who">${who === 'user' ? '你' : 'AI 助手'}</div><div class="bubble"></div>`;
-      const bubble = div.querySelector('.bubble');
-      if (text) bubble.textContent = text;
-      box.appendChild(div); box.scrollTop = box.scrollHeight;
-      return bubble;
-    }
-    async function sendChat() {
-      const inp = document.getElementById('chatInput'); const msg = inp.value.trim();
-      if (!msg) return;
-      addChat('user', msg); inp.value = '';
-      const box = document.getElementById('chatBox');
-      const bubble = addChat('ai');
-      const r = await fetch('/api/chat/stream', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ message: msg }) });
-      const reader = r.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop();
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try { bubble.textContent += JSON.parse(line.slice(6)).delta; } catch (e) {}
-          }
+  /* ---------------- 任务 ---------------- */
+  async function loadTasks() {
+    const d = await (await fetch("/api/tasks")).json();
+    TASKS = d.tasks || [];
+    const box = document.getElementById("taskList");
+    document.getElementById("taskCount").textContent = TASKS.length;
+    if (!TASKS.length) { box.innerHTML = '<div class="empty">暂无任务</div>'; return; }
+    box.innerHTML = "";
+    TASKS.forEach(t => {
+      const status = (t.process && t.process.status) || "unknown";
+      const dsRef = (t.dataset_id === null || t.dataset_id === undefined)
+        ? "数据集已删除" : `数据集 #${t.dataset_id}`;
+      const el = document.createElement("div");
+      el.className = "item" + (currentTask === t.id ? " active" : "");
+      el.style.cursor = "pointer";
+      el.innerHTML =
+        `<div class="row1">
+           <span class="title">#${t.id} ${esc(t.name)}</span>
+           <span class="badge ${status}">${status}</span>
+           <span class="chip-model" title="运行模型">${esc(modelLabel(t.model))}</span>
+         </div>
+         <div class="sub" title="输出目录：${esc(t.path || "—")}">${esc(dsRef)}</div>
+         <div class="actions">
+           <button class="ghost" data-result="${t.id}">查看结果</button>
+           <button class="ghost danger" data-del="${t.id}">删除</button>
+         </div>`;
+      el.onclick = () => openTask(t.id);
+      el.querySelector("[data-result]").onclick = e => { e.stopPropagation(); showResult(t.id); };
+      el.querySelector("[data-del]").onclick = async e => {
+        e.stopPropagation();
+        if (!confirm(`删除任务 #${t.id}「${t.name}」？\n报告与全部产物文件会一并删除，不可恢复。`)) return;
+        const r = await fetch(`/api/tasks/${t.id}`, { method: "DELETE" });
+        if (!r.ok) {
+          let msg = "删除失败";
+          try { msg = (await r.json()).detail || msg; } catch (e2) {}
+          alert(msg); return;
         }
-        box.scrollTop = box.scrollHeight;
+        if (currentTask === t.id) { currentTask = null; clearTimeline(); resetStages(); }
+        loadTasks();
+      };
+      box.appendChild(el);
+    });
+  }
+
+  /* ---------------- 阶段与日志 ---------------- */
+  const STAGES = ["preprocess", "training", "analyze"];
+  function resetStages() { STAGES.forEach(s => document.getElementById("st-" + s).className = "step"); }
+  function setStage(s, cls) {
+    const el = document.getElementById("st-" + s);
+    if (el) el.className = "step " + cls;
+  }
+  function applyStage(ev) {
+    if (ev.event === "stage_start") setStage(ev.stage, "active");
+    if (ev.event === "stage_end") setStage(ev.stage, "done");
+    if (ev.event === "stage_error") setStage(ev.stage, "failed");
+    if (ev.event === "pipeline_failed") {
+      if (ev.current_stage) {
+        setStage(ev.current_stage, "failed");
+      } else if (ev.stages) {
+        // 整体失败：把没有成功的阶段都标红（stages 的键即 preprocess/training/analyze）
+        Object.keys(ev.stages).forEach(k => {
+          if (ev.stages[k] !== "success") setStage(k, "failed");
+        });
       }
     }
-    document.getElementById('chatSend').onclick = sendChat;
-    document.getElementById('chatInput').onkeydown = e => { if (e.key === 'Enter') sendChat(); };
+  }
+  function clearTimeline() {
+    document.getElementById("timeline").innerHTML = "";
+    document.getElementById("logSub").textContent = "等待任务";
+  }
+  function buildEventNode(ev) {
+    const t = ev.ts ? new Date(ev.ts * 1000).toLocaleTimeString("zh-CN", { hour12: false }) : "";
+    let detail = "";
+    if (ev.message) detail = ev.message;
+    if (ev.event === "stage_error" || ev.event === "pipeline_failed") detail += " " + (ev.error || "");
+    if (ev.event === "stage_end") detail = ev.report_url ? ("报告已生成：" + ev.report_url) : "完成";
+    if (ev.event === "pipeline_end") detail = "流水线正常结束";
+    if (detail.length > 2000) detail = detail.slice(0, 2000) + " …";
 
-    function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+    const div = document.createElement("div");
+    div.className = "tl-item";
+    div.innerHTML = `<span class="tl-time">${t}</span><span class="tl-tag ${esc(ev.event)}">${esc(ev.event)}</span><span class="tl-detail">${esc(detail)}</span>`;
+    return div;
+  }
 
-    loadModels().then(() => { loadDatasets(); loadTasks(); });
-  </script>
+  // 单条追加（SSE 实时推送用）
+  function appendEvent(ev) {
+    const tl = document.getElementById("timeline");
+    if (tl.querySelector(".empty")) tl.innerHTML = "";
+    tl.appendChild(buildEventNode(ev));
+    tl.scrollTop = tl.scrollHeight;
+  }
+
+  // 批量渲染（打开历史任务用）：一次性插入，避免逐条滚动造成的排版抖动
+  function renderEvents(list) {
+    const tl = document.getElementById("timeline");
+    if (!list.length) { tl.innerHTML = '<div class="empty">该任务暂无过程记录</div>'; return; }
+    const frag = document.createDocumentFragment();
+    list.forEach(ev => frag.appendChild(buildEventNode(ev)));
+    tl.innerHTML = "";
+    tl.appendChild(frag);
+    tl.scrollTop = tl.scrollHeight;
+  }
+
+  /**
+   * 订阅任务 SSE。
+   * alreadyRendered：这些条数的事件已从 /api/tasks/{id}/state 渲染过，
+   * SSE 会从第 0 条重放，跳过它们避免日志重复。
+   */
+  function attachStream(taskId, label, alreadyRendered) {
+    if (es) { es.close(); es = null; }
+    document.getElementById("logSub").textContent = label;
+    let seen = 0;
+    es = new EventSource(`/api/tasks/${taskId}/stream`);
+    es.onmessage = msg => {
+      const ev = JSON.parse(msg.data);
+      seen += 1;
+      if (seen <= alreadyRendered) return;
+      appendEvent(ev);
+      applyStage(ev);
+      if (ev.event === "pipeline_end" || ev.event === "pipeline_failed") {
+        es.close(); es = null; loadTasks();
+      }
+    };
+  }
+
+  async function startAnalysis(datasetId) {
+    const m = currentModel();
+    if (!m || !m.available) { alert("没有可用的分析模型"); return; }
+    resetStages(); clearTimeline();
+    document.getElementById("logSub").textContent = "启动中…";
+
+    // 不传 params：全部参数由后端按数据规模与硬件自动决策
+    const r = await fetch("/api/tasks/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dataset_id: datasetId, model: m.key })
+    });
+    const d = await r.json();
+    if (!r.ok) { alert((d && d.detail) || "启动分析失败"); return; }
+
+    currentTask = d.task_id;
+    loadTasks();
+    attachStream(d.task_id, `任务 #${d.task_id} · ${m.name}`, 0);
+  }
+
+  async function openTask(taskId) {
+    currentTask = taskId; loadTasks();
+    resetStages(); clearTimeline();
+    if (es) { es.close(); es = null; }
+
+    const cur = TASKS.find(x => x.id === taskId);
+    const label = `任务 #${taskId} · ${modelLabel(cur && cur.model)}`;
+    document.getElementById("logSub").textContent = `${label}（历史）`;
+
+    const s = await (await fetch(`/api/tasks/${taskId}/state`)).json();
+    const events = s.events || [];
+    renderEvents(events);
+    events.forEach(applyStage);
+    if (s.status === "success") STAGES.forEach(x => setStage(x, "done"));
+
+    // 任务仍在跑：重连 SSE 继续接收实时日志（跳过已渲染的历史事件，避免重复）
+    if (s.running || s.status === "running") {
+      attachStream(taskId, `${label}（运行中）`, events.length);
+    }
+  }
+
+  async function showResult(taskId) {
+    const win = window.open("", "_blank");
+    const s = await (await fetch(`/api/tasks/${taskId}/state`)).json();
+    const res = s.result || {};
+    if (s.status === "success") {
+      if (win) win.location.href = `/output/${taskId}/report.html`;
+      return;
+    }
+    if (win) win.close();
+    if (s.status === "failed") {
+      const tip = res.report_status === "failed" ? "（结果分析阶段未产出报告）" : "";
+      alert(`执行失败${tip}：\n${s.error || "请查看任务日志"}`);
+    } else {
+      alert("任务仍在运行，请稍后再查看结果。\n若状态长时间不变，重启服务后会按产物自动对账。");
+    }
+  }
+
+  /* ---------------- AI 助手 ---------------- */
+  function addChat(who, text) {
+    const box = document.getElementById("chatBox");
+    if (box.querySelector(".empty")) box.innerHTML = "";
+    const div = document.createElement("div");
+    div.className = "chat-msg " + who;
+    div.innerHTML = `<div class="who">${who === "user" ? "你" : "AI 助手"}</div><div class="bubble"></div>`;
+    const bubble = div.querySelector(".bubble");
+    if (text) bubble.textContent = text;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+    return bubble;
+  }
+  async function sendChat() {
+    const inp = document.getElementById("chatInput");
+    const msg = inp.value.trim();
+    if (!msg) return;
+    addChat("user", msg);
+    inp.value = "";
+    const box = document.getElementById("chatBox");
+    const bubble = addChat("ai");
+    const r = await fetch("/api/chat/stream", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg })
+    });
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try { bubble.textContent += JSON.parse(line.slice(6)).delta; } catch (e) {}
+        }
+      }
+      box.scrollTop = box.scrollHeight;
+    }
+  }
+  document.getElementById("chatSend").onclick = sendChat;
+  document.getElementById("chatInput").onkeydown = e => { if (e.key === "Enter") sendChat(); };
+
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  // 模型与数据集并行加载，任务列表依赖模型名（徽章）故放在其后
+  Promise.all([loadModels(), loadDatasets()]).then(loadTasks);
+</script>
 </body>
 </html>

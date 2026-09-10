@@ -431,10 +431,8 @@ python server.py
 | `LLM_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口地址 |
 | `LLM_API_KEY` | — | DeepSeek API Key |
 | `LLM_MODEL` | `deepseek-v4-flash` | LLM 模型名称 |
-| `MODEL_EPOCHS` | `100` | 模型训练轮数（各模型 SKILL.md 可单独覆盖） |
-| `MODEL_BATCH_SIZE` | 自动 | 根据 GPU / 数据规模自动决定 |
 | `DEFAULT_MODEL` | `sclinformer` | 默认分析模型（可选 `sclinformer` / `scvi`） |
-| `{模型KEY}_{参数名}` | 见各模型 SKILL.md | 覆盖单个模型参数，如 `SCVI_MAX_EPOCHS=200` |
+| `{模型KEY}_{参数名}` | 见各模型 SKILL.md | **按模型隔离**地覆盖参数：`SCLINFORMER_EPOCHS=200`、`SCLINFORMER_BATCH_SIZE=64`、`SCVI_MAX_EPOCHS=400`、`SCVI_BATCH_SIZE=128`；老的全局 `MODEL_EPOCHS` / `MODEL_BATCH_SIZE` 已废弃 |
 | `SCLINFORMER_DIR` | `../../model/scLinformer-main` | scLinformer 源码目录 |
 | `SANDBOX_IMAGE` | `rna-sandbox:latest` | `execute_code` 沙箱镜像（首次运行按 `docker/sandbox.Dockerfile` 自动构建） |
 | `SANDBOX_TIMEOUT` | `300` | 沙箱执行超时（秒），超时强杀容器 |

@@ -23,15 +23,17 @@ CREATE TABLE IF NOT EXISTS dataset (
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 任务表：id, 名称(数据集名_任务id), 路径(输出结果目录), 模型(key), 过程(json)
+-- 任务表：id, 名称(数据集名_任务id), 路径(输出结果目录), 模型(key), 数据集id, 过程(json)
 CREATE TABLE IF NOT EXISTS task (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(255) NOT NULL,
     path VARCHAR(512),
     model VARCHAR(32) NOT NULL DEFAULT 'sclinformer',
+    dataset_id BIGINT NULL,
     process TEXT,
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 历史库升级：老表缺 model 列时执行（新建库无需执行）
+-- 历史库升级：老表缺列时执行（新建库无需执行；服务启动时也会自动补齐）
 -- ALTER TABLE task ADD COLUMN model VARCHAR(32) NOT NULL DEFAULT 'sclinformer';
+-- ALTER TABLE task ADD COLUMN dataset_id BIGINT NULL;

@@ -166,13 +166,20 @@ class ModelBackend:
         return out
 
     def decide_batch_size(self, n_cells: int, env: dict) -> int:
-        """batch_size 决策：MODEL_BATCH_SIZE 强制覆盖 > SKILL 查表规则。"""
-        if config.MODEL_BATCH_SIZE:
-            return max(1, int(config.MODEL_BATCH_SIZE))
+        """batch_size 决策：按**本模型** SKILL.md 声明的查表规则。
+
+        不读取任何全局变量 —— 参数按模型隔离。想手动指定本模型的批大小，
+        用 `{模型KEY}_BATCH_SIZE`（如 SCVI_BATCH_SIZE=128），该值已在 default_params()
+        里通过环境变量机制生效，会跳过这里的自动决策。
+        """
         env = env or {}
         return get_library().model_batch_size(
             self.key, int(n_cells), env.get("vram_mb"), bool(env.get("gpu_available"))
         )
+
+    def env_prefix(self) -> str:
+        """本模型参数的环境变量前缀，如 SCVI / SCLINFORMER。"""
+        return self.key.upper()
 
     def resolve_config(self, obs_columns, n_cells: int, env: dict, overrides: dict = None) -> dict:
         """合并「默认值 -> 用户覆盖 -> 环境自动决策」，产出最终训练配置。"""
@@ -243,6 +250,16 @@ class ModelBackend:
         )
 
     # ---------------- 对外描述（API / 前端）----------------
+    def get_description(self) -> str:
+        """模型简介：以 SKILL.md 的 description 为准（单一事实源），代码里的作为兜底。
+
+        前端模型选择卡片与报告「所用模型」章节都用它，保持一处修改全局生效。
+        """
+        skill = self.skill()
+        if skill and skill.description:
+            return skill.description
+        return self.description
+
     def to_dict(self, with_schema: bool = True) -> dict:
         ok, reason = self.is_available()
         defaults = self.default_params()
@@ -253,9 +270,10 @@ class ModelBackend:
         d = {
             "key": self.key,
             "name": self.name,
-            "description": self.description,
+            "description": self.get_description(),
             "available": ok,
             "reason": reason,
+            "env_prefix": self.env_prefix(),
             "has_skill": self.skill() is not None,
             "capabilities": self.capabilities.to_dict(),
         }

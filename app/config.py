@@ -10,12 +10,20 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 # ---- 模型运行（与具体模型无关）----
 # 默认模型（必须是 app/tools/models/registry.py 中已注册的模型 key）
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "sclinformer")
-# 训练轮数（默认 100；演示想快速出结果可设小，如 MODEL_EPOCHS=1）
-MODEL_EPOCHS = int(os.environ.get("MODEL_EPOCHS", "100"))
-# 是否显式设置过 MODEL_EPOCHS（显式设置时优先于模型 SKILL.md 中声明的默认值）
-MODEL_EPOCHS_EXPLICIT = os.environ.get("MODEL_EPOCHS") is not None
-# 强制指定 batch_size（None=按显存+数据量自动判断；OOM 时可用它手动调小）
-MODEL_BATCH_SIZE = int(os.environ["MODEL_BATCH_SIZE"]) if os.environ.get("MODEL_BATCH_SIZE") else None
+
+# 模型参数的默认值与覆盖**完全按模型隔离**：
+#   1) 默认值：由各模型自己的 SKILL.md 的 params 声明（如 epochs / max_epochs）
+#   2) 覆盖：环境变量 {模型KEY}_{参数名}，例如
+#        SCLINFORMER_EPOCHS=200      scLinformer 训练轮数
+#        SCLINFORMER_BATCH_SIZE=64   scLinformer 批大小
+#        SCVI_MAX_EPOCHS=400         scVI 最大训练轮数
+#        SCVI_BATCH_SIZE=128         scVI 批大小
+#   3) 单次覆盖：API/前端传入的 params
+# 这里**不再提供全局的 MODEL_EPOCHS / MODEL_BATCH_SIZE** —— 一个全局变量同时影响
+# 多个模型会造成"改了 A 却动了 B"，因此已废弃（见 LEGACY_MODEL_ENV 的启动告警）。
+LEGACY_MODEL_ENV = {
+    k: os.environ[k] for k in ("MODEL_EPOCHS", "MODEL_BATCH_SIZE") if k in os.environ
+}
 
 # scLinformer 源码根目录（train.py 所在目录，内含 scLinformer/ 包）
 SCLINFORMER_DIR = os.environ.get(

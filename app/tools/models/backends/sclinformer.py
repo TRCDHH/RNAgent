@@ -19,7 +19,7 @@ from app.tools.models.registry import register_model
 class ScLinformerBackend(ModelBackend):
     key = "sclinformer"
     name = "scLinformer"
-    description = "基于 Transformer 的自编码模型，模型内部完成归一化与高变基因筛选，适用于通用单细胞表征学习。"
+    description = "Transformer 自编码器，内部自带归一化与高变基因筛选。"  # 兜底，实际取 SKILL.md
 
     capabilities = Capabilities(
         needs_counts_layer=False,
@@ -33,7 +33,7 @@ class ScLinformerBackend(ModelBackend):
 
     param_specs = [
         ParamSpec("epochs", "int", default=None, auto=True,
-                  label="训练轮数", desc="留空时取 SKILL 默认值；也可用环境变量 MODEL_EPOCHS 覆盖"),
+                  label="训练轮数", desc="默认取 SKILL.md 声明值；可用 SCLINFORMER_EPOCHS 覆盖"),
         ParamSpec("batch_size", "int", default=None, auto=True,
                   label="批大小", desc="留空=按显存与数据量自动决定"),
         ParamSpec("use_batch", "bool", default=None, auto=True,
@@ -58,11 +58,8 @@ class ScLinformerBackend(ModelBackend):
 
     # ---------------- 参数 ----------------
     def resolve_config(self, obs_columns, n_cells: int, env: dict, overrides: dict = None) -> dict:
+        """默认值全部来自本模型 SKILL.md，覆盖用 SCLINFORMER_* 环境变量或单次 params。"""
         cfg = super().resolve_config(obs_columns, n_cells, env, overrides)
-        if config.MODEL_EPOCHS_EXPLICIT:
-            cfg["epochs"] = config.MODEL_EPOCHS
-        if not cfg.get("epochs"):
-            cfg["epochs"] = config.MODEL_EPOCHS
         cfg["use_universal_model"] = bool(cfg.get("use_universal_model"))
         return cfg
 

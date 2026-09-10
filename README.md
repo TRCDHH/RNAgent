@@ -350,8 +350,7 @@ All major settings can be overridden with environment variables.
 | `LLM_BASE_URL` | `https://api.deepseek.com` | OpenAI-compatible endpoint |
 | `LLM_API_KEY` | — | DeepSeek API key |
 | `LLM_MODEL` | `deepseek-v4-flash` | LLM model |
-| `MODEL_EPOCHS` | `1` | Training epochs |
-| `MODEL_BATCH_SIZE` | Auto | GPU / dataset-aware batch size |
+| `{MODEL_KEY}_{PARAM}` | per-model SKILL.md | Per-model parameter override (isolated per model), e.g. `SCLINFORMER_EPOCHS=200`, `SCVI_MAX_EPOCHS=400`, `SCVI_BATCH_SIZE=128` |
 | `SCLINFORMER_DIR` | `../../model/scLinformer-main` | scLinformer source directory |
 | `SANDBOX_IMAGE` | `rna-sandbox:latest` | `execute_code` sandbox image (auto-built from `docker/sandbox.Dockerfile` on first run) |
 | `SANDBOX_TIMEOUT` | `300` | Sandbox execution timeout in seconds (container is force-killed on expiry) |

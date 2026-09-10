@@ -2,7 +2,7 @@
 name: sclinformer
 type: model
 display_name: scLinformer
-description: 基于 Transformer 的自编码模型，模型内部完成归一化与高变基因筛选，适用于通用单细胞表征学习
+description: Transformer 自编码器，内部自带归一化与高变基因筛选
 params:
   epochs: 100
   batch_size: auto
@@ -32,8 +32,8 @@ batch_size_caps: 500=32; 2000=64
 |------|--------|
 | `use_batch` | `'batch' in obs.columns`，留空（auto）即按此自动决定 |
 | `use_cell_type` | `'cell_type' in obs.columns`，同上 |
-| `batch_size` | 见下方查表规则；环境变量 `MODEL_BATCH_SIZE` 可强制覆盖 |
-| `epochs` | 默认 1（演示）；`MODEL_EPOCHS` 或 `SCLINFORMER_EPOCHS` 可覆盖 |
+| `batch_size` | 见下方查表规则；环境变量 `SCLINFORMER_BATCH_SIZE` 可强制覆盖 |
+| `epochs` | 默认 100（见 frontmatter）；`SCLINFORMER_EPOCHS` 可覆盖 |
 | `use_universal_model` | 固定 False（不启用跨数据集基因对齐） |
 | `process_data` / `use_hvg` / `n_genes` | 保持默认 True / True / 2000 |
 
@@ -54,7 +54,7 @@ batch_size_caps: 500=32; 2000=64
 
 ## 四、异常兜底
 
-- CUDA out of memory → `batch_size` 减半重试，或设 `MODEL_BATCH_SIZE` 强制小 batch
+- CUDA out of memory → `batch_size` 减半重试，或设 `SCLINFORMER_BATCH_SIZE` 强制小 batch
 - 找不到 `processed_rna.h5ad` → 报错并提示先完成预处理阶段
 - 无 GPU → 自动用 CPU，`batch_size` 取 `cpu` 值，提示训练较慢
 - 找不到源码目录 → 前端该模型置灰，提示配置 `SCLINFORMER_DIR`

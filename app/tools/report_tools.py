@@ -91,7 +91,7 @@ def collect_report_context(output_dir, preprocess, training, dataset_id) -> dict
     model_info = {
         "key": backend.key,
         "name": training.get("model_name") or preprocess.get("model_name") or backend.name,
-        "description": backend.description,
+        "description": backend.get_description(),
         "params": training.get("model_params") or preprocess.get("model_params") or {},
         "capabilities": backend.capabilities.to_dict(),
     }
