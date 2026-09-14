@@ -8,7 +8,8 @@
     skills/registry/models/<model_key>/SKILL.md
 流程规则见 skills/registry/model-running/SKILL.md。
 
-对外提供：inspect_environment / run_model / run_model_stage
+对外提供：inspect_environment / prepare_training_context / attempt_training /
+          run_model / run_model_stage
 
 注意：torch、scanpy 等重依赖均惰性导入，保证主应用（FastAPI 门户）
 在未安装这些库时也能正常启动，仅在实际执行训练时报错提示。
@@ -194,11 +195,34 @@ def run_model(rna_path: str, output_dir: str, model_config: dict, model: str = N
 
 
 # ---------------------------------------------------------------------------
-# 编排入口：分析环境 + 上一步结果 -> 决策参数 -> 训练评测
+# 训练上下文与失败分类（供 default / react 两条路径共用）
 # ---------------------------------------------------------------------------
-def run_model_stage(task_id: int, output_dir: str, preprocess: dict = None,
-                    model: str = None, model_params: dict = None) -> dict:
-    """训练阶段编排：如同一个只「传参 + 执行工具」的 Agent，把决策落到模型运行。"""
+def classify_training_error(msg: str) -> str:
+    """把训练子进程的报错归类，供 ReAct 恢复循环做针对性调整。
+
+    归类只是**提示**，不是判据 —— 最终改什么参数由模型结合 skill 与上下文自己决定。
+    """
+    m = (msg or "").lower()
+    if "out of memory" in m or "outofmemoryerror" in m or "cuda oom" in m:
+        return "oom"
+    if "no module named" in m or "modulenotfounderror" in m or "importerror" in m:
+        return "dependency"
+    if "nan" in m or "inf" in m:
+        return "diverged"
+    if "找不到预处理产物" in m or "filenotfounderror" in m:
+        return "missing_input"
+    return "unknown"
+
+
+def prepare_training_context(output_dir: str, preprocess: dict = None,
+                            model: str = None, model_params: dict = None) -> dict:
+    """准备训练上下文：校验数据 -> 探环境 -> 决定默认参数。
+
+    两条路径共用（default 直接训练；react 以其作为「先默认」的起手配置）：
+    - default：run_model_stage() 接着调 _train_and_eval_monitored；
+    - react  ：training_agent.run_model_stage_react() 先按默认参数尝试一次，
+               失败后再由 LLM 在这个上下文之上调整参数重试。
+    """
     os.makedirs(output_dir, exist_ok=True)
     preprocess = preprocess or {}
     backend = get_backend(model)
@@ -219,23 +243,60 @@ def run_model_stage(task_id: int, output_dir: str, preprocess: dict = None,
     adata = sc.read_h5ad(rna_path)
     n_cells, n_genes = int(adata.n_obs), int(adata.n_vars)
     obs_columns = [str(c) for c in adata.obs.columns]
-    model_config = backend.resolve_config(obs_columns, n_cells, env, overrides=model_params)
+    base_config = backend.resolve_config(obs_columns, n_cells, env, overrides=model_params)
 
     emit("training_log", {
         "message": f"模型 {backend.name} 参数决定：" +
-                   ", ".join(f"{k}={model_config[k]}" for k in list(model_config)[:6]) +
+                   ", ".join(f"{k}={base_config[k]}" for k in list(base_config)[:6]) +
                    f"（显存 {env.get('vram_mb')}MB, n_cells={n_cells}）"
     })
-
-    # 3) 子进程训练 + 评测（父进程监控进度与资源）
-    result = _train_and_eval_monitored(rna_path, output_dir, model_config, model=backend.key)
-    result.update({
-        "config": _json_safe(model_config),
+    return {
+        "backend": backend,
+        "rna_path": rna_path,
         "env": env,
-        "data": {"n_cells": n_cells, "n_genes": n_genes},
-        "processed_path": rna_path,
-        "model": backend.key,
-        "model_name": backend.name,
-        "model_params": _json_safe(model_params or {}),
+        "n_cells": n_cells,
+        "n_genes": n_genes,
+        "obs_columns": obs_columns,
+        "base_config": base_config,
+        "model_params": model_params or {},
+    }
+
+
+def attempt_training(rna_path: str, output_dir: str, model_config: dict,
+                     model: str = None) -> dict:
+    """执行**一次**训练尝试，**不抛异常**：成功/失败都以结果字典返回。
+
+    与 _train_and_eval_monitored 的唯一区别是失败时的处理方式：后者 raise，
+    适合「一次定生死」的 default 路径；本函数返回结构化失败信息（含 error_kind），
+    供 ReAct 恢复循环在失败后继续决策 —— 否则循环会被异常直接打断。
+    """
+    try:
+        result = _train_and_eval_monitored(rna_path, output_dir, model_config, model=model)
+        return {"ok": True, "result": result, "error": None, "error_kind": None}
+    except Exception as e:
+        msg = f"{e}"
+        return {"ok": False, "result": None, "error": msg,
+                "error_kind": classify_training_error(msg)}
+
+
+# ---------------------------------------------------------------------------
+# 编排入口：分析环境 + 上一步结果 -> 决策参数 -> 训练评测
+# ---------------------------------------------------------------------------
+def run_model_stage(task_id: int, output_dir: str, preprocess: dict = None,
+                    model: str = None, model_params: dict = None) -> dict:
+    """训练阶段编排：如同一个只「传参 + 执行工具」的 Agent，把决策落到模型运行。"""
+    ctx = prepare_training_context(output_dir, preprocess, model, model_params)
+
+    # 子进程训练 + 评测（父进程监控进度与资源）
+    result = _train_and_eval_monitored(ctx["rna_path"], output_dir, ctx["base_config"],
+                                      model=ctx["backend"].key)
+    result.update({
+        "config": _json_safe(ctx["base_config"]),
+        "env": ctx["env"],
+        "data": {"n_cells": ctx["n_cells"], "n_genes": ctx["n_genes"]},
+        "processed_path": ctx["rna_path"],
+        "model": ctx["backend"].key,
+        "model_name": ctx["backend"].name,
+        "model_params": _json_safe(ctx["model_params"]),
     })
     return _json_safe(result)

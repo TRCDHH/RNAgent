@@ -322,22 +322,27 @@ def _load_universal_vocab() -> dict:
 # ---------------------------------------------------------------------------
 # 工具 3：rename_column —— 改列名并重跑 judge
 # ---------------------------------------------------------------------------
-def rename_column(adata, from_col: str, to_col: str) -> dict:
-    """把 obs[from_col] 改名为 obs[to_col]，返回改动前后对照并重跑 judge。"""
+def rename_column(adata, from_col: str, to_col: str, run_judge: bool = True) -> dict:
+    """把 obs[from_col] 改名为 obs[to_col]，返回改动前后对照并重跑 judge。
+
+    run_judge=False：跳过内部 judge。供 ReAct 工具层使用——那里由 _after_write() 统一判定
+    一次（且带模型专属项），避免对同一份数据重复执行昂贵的判定。
+    """
     try:
         if from_col not in adata.obs.columns:
             return {"status": "error", "error": f"列不存在：{from_col}"}
         before = list(adata.obs.columns)
         adata.obs = adata.obs.rename(columns={from_col: to_col})
         after = list(adata.obs.columns)
-        re_judge = judge(adata)
-        return {
+        out = {
             "status": "ok",
             "from_col": from_col, "to_col": to_col,
             "columns_before": _json_safe(before),
             "columns_after": _json_safe(after),
-            "re_judge": re_judge,
         }
+        if run_judge:
+            out["re_judge"] = judge(adata)
+        return out
     except Exception as e:
         return {"status": "error", "error": str(e), "traceback": _err_info(e)}
 
@@ -878,6 +883,24 @@ def run_preprocess(task_id: int, dataset_id: int, dataset_path: str, output_dir:
     audit_log.append({"time": datetime.now().isoformat(), "op": "re_judge",
                       "detail": json.dumps(verdicts, ensure_ascii=False)})
 
+    # 5~8) 确定性收尾（按模型加工 -> 数据分析 -> 报告 -> 保存）
+    # 与 ReAct 模式共用同一段收尾，保证两条路径的产物结构与文件名完全一致。
+    return finalize_preprocess(
+        adata=adata, verdicts=verdicts, output_dir=output_dir, backend=backend,
+        params=params, audit_log=audit_log, dataset_path=dataset_path,
+    )
+
+
+def finalize_preprocess(adata, verdicts, output_dir, backend, params, audit_log,
+                        dataset_path: str = "") -> dict:
+    """确定性收尾（**不经 LLM**）：按模型能力位加工 -> 数据分析 -> 报告 -> 保存。
+
+    两条路径共用本函数，这是本方案划定的架构边界：
+    **LLM 只决定「如何把数据修对」，修对之后产什么交付物由确定性代码决定。**
+    - pipeline 模式：run_preprocess() 在 _auto_repair 后调用；
+    - ReAct 模式：app/graph/preprocess_agent.py 在 LLM 决策循环结束后调用。
+    因此模型契约（backend.prepare_data）永远不会被 LLM 绕过或改写。
+    """
     # 5) 按模型加工数据（能力位驱动，不出现模型名）
     adata = backend.prepare_data(adata, params)
     audit_log.append({"time": datetime.now().isoformat(), "op": "prepare_data",

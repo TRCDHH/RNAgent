@@ -31,6 +31,41 @@ SCLINFORMER_DIR = os.environ.get(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "model", "scLinformer-main")),
 )
 
+# ---- 预处理阶段模式（ReAct 决策层）----
+# pipeline：现有确定性链路（默认，行为与历史完全一致）
+# react   ：始终由 LLM 通过 skill 描述与工具调用自主决策
+# auto    ：judge 无 FAIL 时跳过 LLM（快路径），出现 FAIL 才升级为 ReAct
+# 未配置 LLM_API_KEY 时，react/auto 一律自动降级为 pipeline（保证不配 key 也能出结果）。
+PREPROCESS_MODE = os.environ.get("PREPROCESS_MODE", "pipeline").strip().lower()
+
+# ReAct 预算护栏：任一超限即强制结束决策（收尾仍由确定性代码完成）
+PREPROCESS_MAX_STEPS = int(os.environ.get("PREPROCESS_MAX_STEPS", "20"))
+PREPROCESS_TIME_BUDGET = int(os.environ.get("PREPROCESS_TIME_BUDGET", "600"))
+
+# 无进展检测：连续 N 轮写操作后 FAIL 集合完全不变 => 判定卡住，强制结束
+PREPROCESS_NO_PROGRESS_LIMIT = int(os.environ.get("PREPROCESS_NO_PROGRESS_LIMIT", "3"))
+
+# ReAct 决策用的模型与温度（与报告/助手的 LLM 相互独立，便于单独换更强的模型）
+PREPROCESS_MODEL = os.environ.get("PREPROCESS_MODEL", os.environ.get("LLM_MODEL", "deepseek-v4-flash"))
+PREPROCESS_TEMPERATURE = float(os.environ.get("PREPROCESS_TEMPERATURE", "0"))
+
+# ---- 训练阶段模式（ReAct 参数决策与失败恢复）----
+# default：完全由手册规则决定参数，失败即终止（历史行为，默认值）
+# react  ：**首次尝试仍用规则默认值**（不花 LLM 成本），失败后由 LLM 诊断原因、
+#          调整参数并重试（有界）。理由是规则表在正常路径上已足够可靠，
+#          LLM 的价值集中在"出错了怎么办"——这正是 workflow 与 agent 的分水岭。
+TRAINING_MODE = os.environ.get("TRAINING_MODE", "default").strip().lower()
+
+# 训练尝试总次数上限（含首次）。恢复循环绝不会超过这个次数（防止无限烧 GPU）
+TRAINING_MAX_ATTEMPTS = int(os.environ.get("TRAINING_MAX_ATTEMPTS", "3"))
+
+# 恢复循环的时长预算（秒），从进入恢复循环开始计时（不含首次训练耗时）
+TRAINING_RECOVER_BUDGET = int(os.environ.get("TRAINING_RECOVER_BUDGET", "3600"))
+
+# 恢复决策用的模型与温度（与预处理/报告相互独立）
+TRAINING_MODEL = os.environ.get("TRAINING_MODEL", os.environ.get("LLM_MODEL", "deepseek-v4-flash"))
+TRAINING_TEMPERATURE = float(os.environ.get("TRAINING_TEMPERATURE", "0"))
+
 # ---- execute_code Docker 沙箱 ----
 # 沙箱镜像（首次执行时若本地缺失，会按 docker/sandbox.Dockerfile 自动构建）
 SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE", "rna-sandbox:latest")

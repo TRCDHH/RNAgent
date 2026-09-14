@@ -24,6 +24,7 @@ from app.llm import llm_configured
 from app.main import run_pipeline
 from app.tools.assistant_tools import run_assistant, stream_assistant
 from app.tools.models import all_backends, default_key, get_backend, list_models, validate
+from app.tools.preprocess_replay import run_replay, trace_path
 
 app = FastAPI(title="RNAgent")
 
@@ -48,6 +49,11 @@ def _startup():
     # 模型注册表自检：模型实现与 SKILL.md 是否一致（不一致只告警，不影响启动）
     for problem in validate():
         print(f"[warn] 模型一致性自检：{problem}")
+    # 运行模式自述：让人一眼看出本次启动到底启用了哪些 Agent 能力
+    print(f"[info] LLM={'已配置' if llm_configured() else '未配置'}"
+          f" | 预处理 PREPROCESS_MODE={config.PREPROCESS_MODE}（react/auto 需 LLM，否则降级 pipeline）"
+          f" | 训练 TRAINING_MODE={config.TRAINING_MODE}"
+          f"（最多 {config.TRAINING_MAX_ATTEMPTS} 次尝试）")
     # 模型参数已按模型隔离：旧的全局变量不再生效，提示改用 {模型KEY}_{参数名}
     for k, v in config.LEGACY_MODEL_ENV.items():
         print(f"[warn] 环境变量 {k}={v} 已废弃且不再生效（参数已按模型隔离）；"
@@ -111,6 +117,13 @@ def api_models():
         "models": list_models(with_schema=True),
         "default": default_key(),
         "warnings": validate(),
+        # 运行时模式：前端/调用方可据此判断当前是否启用了 ReAct 决策与失败恢复
+        "runtime": {
+            "llm_configured": llm_configured(),
+            "preprocess_mode": config.PREPROCESS_MODE,
+            "training_mode": config.TRAINING_MODE,
+            "training_max_attempts": config.TRAINING_MAX_ATTEMPTS,
+        },
     }
 
 
@@ -159,6 +172,8 @@ def list_tasks():
             "path": t["path"],
             "model": t.get("model") or default_key(),
             "dataset_id": t.get("dataset_id"),
+            # 是否留有 Agent 轨迹：决定前端是否显示「重放」按钮
+            "has_trace": _has_trace(t.get("path")),
             # 列表只回状态摘要：events 可能很大（单任务数百条），详情走 /api/tasks/{id}/state
             "process": {
                 "status": proc.get("status") or "unknown",
@@ -307,6 +322,49 @@ def delete_task(task_id: int):
     return {"ok": True, "deleted_files": bool(out_dir)}
 
 
+# ---------- Agent 轨迹重放（不使用 LLM） ----------
+class ReplayIn(BaseModel):
+    model: str = None          # 缺省用轨迹里记录的模型
+    output_dir: str = None     # 缺省写到 <任务目录>/replay，避免覆盖原始产物
+
+
+@app.post("/api/tasks/{task_id}/replay")
+def replay_task(task_id: int, body: ReplayIn = None):
+    """按 Agent 轨迹重放一次预处理（**全程不调用 LLM**）。
+
+    仅适用于 ReAct 模式产生的任务（需存在 04_Agent轨迹.json）。
+    默认输出到 <任务目录>/replay，不覆盖原任务的报告与产物。
+
+    注意：本接口是**同步**执行的（重放不含 LLM 与训练，通常远快于原任务，
+    但仍需加载数据并重算 QC/报告），大任务请耐心等待。
+    """
+    t = db.get_task(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    trace_dir = (t.get("path") or "").strip()
+    if not trace_dir:
+        raise HTTPException(status_code=400, detail="该任务没有输出目录，无法重放")
+    if not _has_trace(trace_dir):
+        raise HTTPException(
+            status_code=400,
+            detail="该任务没有 Agent 轨迹（04_Agent轨迹.json）——"
+                   "重放仅适用于 ReAct 模式（PREPROCESS_MODE=react/auto）运行的任务")
+
+    # 优先用数据集登记的路径；数据集已删除时回退到轨迹里记录的那份
+    dataset_path = None
+    if t.get("dataset_id"):
+        ds = db.get_dataset(t["dataset_id"])
+        dataset_path = (ds or {}).get("path")
+
+    body = body or ReplayIn()
+    try:
+        return run_replay(trace_dir, dataset_path=dataset_path, model=body.model,
+                          output_dir=body.output_dir)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"重放失败：{type(e).__name__}: {e}")
+
+
 # ---------- AI 聊天（DeepSeek） ----------
 class ChatIn(BaseModel):
     message: str
@@ -348,3 +406,9 @@ def _parse_process(raw: str):
         return json.loads(raw)
     except Exception:
         return {"status": "unknown", "events": []}
+
+
+def _has_trace(path) -> bool:
+    """任务目录下是否存在 Agent 轨迹（决定前端是否提供「重放」入口）。"""
+    d = (path or "").strip()
+    return bool(d) and Path(trace_path(d)).exists()

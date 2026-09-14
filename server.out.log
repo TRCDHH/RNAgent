@@ -1,0 +1,2 @@
+[info] LLM=已配置 | 预处理 PREPROCESS_MODE=auto（react/auto 需 LLM，否则降级 pipeline） | 训练 TRAINING_MODE=react（最多 3 次尝试）
+INFO:     127.0.0.1:55822 - "GET /api/models HTTP/1.1" 200 OK

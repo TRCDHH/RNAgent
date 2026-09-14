@@ -32,9 +32,9 @@ class ScLinformerBackend(ModelBackend):
     )
 
     param_specs = [
-        ParamSpec("epochs", "int", default=None, auto=True,
+        ParamSpec("epochs", "int", default=None, auto=True, min=1,
                   label="训练轮数", desc="默认取 SKILL.md 声明值；可用 SCLINFORMER_EPOCHS 覆盖"),
-        ParamSpec("batch_size", "int", default=None, auto=True,
+        ParamSpec("batch_size", "int", default=None, auto=True, min=1,
                   label="批大小", desc="留空=按显存与数据量自动决定"),
         ParamSpec("use_batch", "bool", default=None, auto=True,
                   label="使用 batch", desc="留空=obs 含 batch 列时自动开启"),

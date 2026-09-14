@@ -227,6 +227,45 @@
   .tl-tag.pipeline_start,.tl-tag.pipeline_end{background:#e0f2fe;color:#0369a1}
   .tl-detail{color:#475569;word-break:break-word;line-height:1.6;white-space:pre-wrap}
 
+  /* ---------- Agent 决策轨迹（ReAct）：思考与工具调用单独渲染 ---------- */
+  .tl-tag.agent_thought{background:#f5f3ff;color:#7c3aed}
+  .tl-tag.agent_tool_result{background:#e0f2fe;color:#0369a1}
+  .tl-tag.agent_tool_result.err{background:var(--err-soft);color:var(--err)}
+  .tl-tag.preprocess_warn{background:var(--warn-soft);color:var(--warn)}
+  /* 左侧紫条 + 淡紫渐隐，让「LLM 的思考」在时间线里一眼可辨 */
+  .tl-item.agent{
+    border-left:2px solid #c4b5fd;
+    background:linear-gradient(90deg,rgba(245,243,255,.72),rgba(245,243,255,0) 72%);
+  }
+  .tl-item.agent:hover{background:linear-gradient(90deg,rgba(237,233,254,.95),rgba(245,243,255,0) 72%)}
+  .agent-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px}
+  .agent-step{
+    font-size:10px;font-weight:800;color:#7c3aed;background:#fff;
+    border:1px solid #e9e5ff;border-radius:5px;padding:1px 6px;white-space:nowrap;
+  }
+  .chip-tool{
+    font-size:10.5px;font-weight:600;color:#475569;background:#fff;
+    border:1px solid var(--line);border-radius:5px;padding:1px 7px;white-space:nowrap;
+  }
+  .chip-tool.write{border-color:#ddd6fe;background:#faf5ff;color:#7c3aed}
+  .agent-verdict{font-size:10.5px;font-weight:700;border-radius:5px;padding:1px 7px}
+  .agent-verdict.ok{background:var(--ok-soft);color:var(--ok)}
+  .agent-verdict.err{background:var(--err-soft);color:var(--err)}
+  .agent-text{color:#334155;line-height:1.65;white-space:pre-wrap}
+  .agent-text.muted{color:var(--faint);font-style:italic}
+  .agent-verdict.run{background:var(--accent-soft);color:var(--accent)}
+  .agent-note{font-size:10.5px;color:var(--faint)}
+
+  /* ---------- 训练尝试（ReAct 恢复循环）：橙色调与预处理区分 ---------- */
+  .tl-tag.training_attempt{background:#fff7ed;color:#c2410c}
+  .tl-tag.training_attempt.err{background:var(--err-soft);color:var(--err)}
+  .tl-tag.training_warn{background:var(--warn-soft);color:var(--warn)}
+  .tl-item.attempt{
+    border-left:2px solid #fdba74;
+    background:linear-gradient(90deg,rgba(255,247,237,.75),rgba(255,247,237,0) 72%);
+  }
+  .tl-item.attempt:hover{background:linear-gradient(90deg,rgba(255,237,213,.95),rgba(255,247,237,0) 72%)}
+
   /* ---------- 聊天 ---------- */
   .chat{flex:1;min-height:0}
   .chat-box{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding-right:2px;margin-bottom:11px}
@@ -537,10 +576,13 @@
          <div class="sub" title="输出目录：${esc(t.path || "—")}">${esc(dsRef)}</div>
          <div class="actions">
            <button class="ghost" data-result="${t.id}">查看结果</button>
+           ${t.has_trace ? `<button class="plain" data-replay="${t.id}" title="按 Agent 轨迹重放（不调用 LLM）">重放</button>` : ""}
            <button class="ghost danger" data-del="${t.id}">删除</button>
          </div>`;
       el.onclick = () => openTask(t.id);
       el.querySelector("[data-result]").onclick = e => { e.stopPropagation(); showResult(t.id); };
+      const rpBtn = el.querySelector("[data-replay]");
+      if (rpBtn) rpBtn.onclick = e => { e.stopPropagation(); replayTask(t.id, rpBtn); };
       el.querySelector("[data-del]").onclick = async e => {
         e.stopPropagation();
         if (!confirm(`删除任务 #${t.id}「${t.name}」？\n报告与全部产物文件会一并删除，不可恢复。`)) return;
@@ -583,8 +625,82 @@
     document.getElementById("timeline").innerHTML = "";
     document.getElementById("logSub").textContent = "等待任务";
   }
+  // ReAct 中会改变数据的工具：前端据此把「写操作」chip 标成紫色，与只读探查区分开
+  const WRITE_TOOLS = new Set(["rename_column", "split_column", "drop_obs_columns", "execute_code"]);
+
+  function fmtTime(ev) {
+    return ev.ts ? new Date(ev.ts * 1000).toLocaleTimeString("zh-CN", { hour12: false }) : "";
+  }
+
+  function toolChips(names) {
+    return (names || []).map(n =>
+      `<span class="chip-tool${WRITE_TOOLS.has(n) ? " write" : ""}">${esc(n)}</span>`).join("");
+  }
+
+  /** Agent 事件专用渲染：🧠 思考（步数 + 工具 chips + 说明）/ 🔧 工具（名称 + 成功失败） */
+  function buildAgentNode(ev) {
+    const div = document.createElement("div");
+    div.className = "tl-item agent";
+    const t = fmtTime(ev);
+
+    if (ev.event === "agent_thought") {
+      const tools = ev.tools || [];
+      const meta = `<span class="agent-meta"><span class="agent-step">第 ${esc(ev.step ?? "?")} 步</span>` +
+        (tools.length ? toolChips(tools) : '<span class="chip-tool">无工具调用</span>') + "</span>";
+      const text = String(ev.content || "").trim();
+      const body = text
+        ? `<div class="agent-text">${esc(text)}</div>`
+        : '<div class="agent-text muted">（本次未输出说明，直接进入工具调用）</div>';
+      div.innerHTML = `<span class="tl-time">${t}</span>` +
+        `<span class="tl-tag agent_thought">🧠 思考</span>` +
+        `<span class="tl-detail">${meta}${body}</span>`;
+      return div;
+    }
+
+    // agent_tool_result
+    const ok = ev.ok !== false;
+    div.innerHTML = `<span class="tl-time">${t}</span>` +
+      `<span class="tl-tag agent_tool_result${ok ? "" : " err"}">🔧 工具</span>` +
+      `<span class="tl-detail"><span class="agent-meta">${toolChips([ev.tool])}` +
+      `<span class="agent-verdict ${ok ? "ok" : "err"}">${ok ? "成功" : "失败"}</span></span></span>`;
+    return div;
+  }
+
+  /** 参数变化渲染：batch_size: 128 → 64；无变化则显示「默认参数」 */
+  function fmtChanges(changes) {
+    if (!changes || !changes.length) return '<span class="chip-tool">默认参数</span>';
+    return changes.map(c =>
+      `<span class="chip-tool write">${esc(c.name)}: ${esc(c.from ?? "—")} → ${esc(c.to)}</span>`).join("");
+  }
+
+  /** 训练尝试渲染：第 N/M 次 · 参数变化 · 成功/失败 · 原因与耗时 */
+  function buildTrainingAttemptNode(ev) {
+    const div = document.createElement("div");
+    div.className = "tl-item attempt";
+    const running = ev.status === "running";
+    const ok = ev.status === "success";
+    const cls = running ? "run" : (ok ? "ok" : "err");
+    const label = running ? "进行中" : (ok ? "成功" : "失败");
+    const extra = [];
+    if (ev.error_kind) extra.push(`原因 ${esc(ev.error_kind)}`);
+    if (ev.elapsed_s != null) extra.push(`${esc(ev.elapsed_s)}s`);
+    if (ev.reason) extra.push(`依据 ${esc(ev.reason)}`);
+    div.innerHTML = `<span class="tl-time">${fmtTime(ev)}</span>` +
+      `<span class="tl-tag training_attempt${(!running && !ok) ? " err" : ""}">🔁 训练</span>` +
+      `<span class="tl-detail"><span class="agent-meta">` +
+      `<span class="agent-step">第 ${esc(ev.attempt ?? "?")}/${esc(ev.attempt_max ?? "?")} 次</span>` +
+      fmtChanges(ev.changes) +
+      `<span class="agent-verdict ${cls}">${label}</span>` +
+      (extra.length ? `<span class="agent-note">${extra.join(" · ")}</span>` : "") +
+      `</span></span>`;
+    return div;
+  }
+
   function buildEventNode(ev) {
-    const t = ev.ts ? new Date(ev.ts * 1000).toLocaleTimeString("zh-CN", { hour12: false }) : "";
+    if (ev.event === "agent_thought" || ev.event === "agent_tool_result") return buildAgentNode(ev);
+    if (ev.event === "training_attempt") return buildTrainingAttemptNode(ev);
+
+    const t = fmtTime(ev);
     let detail = "";
     if (ev.message) detail = ev.message;
     if (ev.event === "stage_error" || ev.event === "pipeline_failed") detail += " " + (ev.error || "");
@@ -693,6 +809,37 @@
       alert(`执行失败${tip}：\n${s.error || "请查看任务日志"}`);
     } else {
       alert("任务仍在运行，请稍后再查看结果。\n若状态长时间不变，重启服务后会按产物自动对账。");
+    }
+  }
+
+  /** 按 Agent 轨迹重放（不调用 LLM）：产物写到 <任务目录>/replay，不覆盖原始结果 */
+  async function replayTask(taskId, btn) {
+    if (!confirm(`按 Agent 轨迹重放任务 #${taskId}？\n\n· 不调用 LLM，重跑一次修复并生成产物\n· 输出到「<任务目录>/replay」，不覆盖原始报告\n· 与原始判定比对，验证可复现性`)) return;
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "重放中…";
+    try {
+      const r = await fetch(`/api/tasks/${taskId}/replay`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+      });
+      const d = await r.json();
+      if (!r.ok) { alert((d && d.detail) || "重放失败"); return; }
+      const same = d.reproduced === undefined
+        ? "（未做等价性校验）"
+        : (d.reproduced ? "判定一致 ✓ 可复现" : "判定不一致 ⚠ 见下方说明");
+      alert(
+        `重放完成：${d.replayed} 个写操作（未调用 LLM）\n` +
+        `判定：${d.judge_before} → ${d.judge_after}（原始轨迹 ${d.expected_judge}）\n` +
+        `可复现性：${same}\n` +
+        (d.note ? `说明：${d.note}\n` : "") +
+        `产物目录：${d.output_dir || "—"}`
+      );
+    } catch (e) {
+      alert("重放请求失败：" + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+      loadTasks();
     }
   }
 

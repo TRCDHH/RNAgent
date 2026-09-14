@@ -60,7 +60,7 @@ class ScVIBackend(ModelBackend):
         ParamSpec("max_epochs", "int", default=None, auto=True, min=1, max=100000,
                   label="最大训练轮数",
                   desc="留空 = scvi 官方启发式 min(20000/细胞数×400, 400)；可用 SCVI_MAX_EPOCHS 覆盖"),
-        ParamSpec("batch_size", "int", default=None, auto=True,
+        ParamSpec("batch_size", "int", default=None, auto=True, min=1,
                   label="批大小", desc="留空=按显存与数据量自动决定"),
         ParamSpec("batch_key", "str", default="batch",
                   label="批次字段名", desc="obs 中的批次列名；不存在则关闭批次校正"),
