@@ -99,6 +99,11 @@ class Capabilities:
     evaluates_internally: bool = False    # 训练是否自带评测（scLinformer.test_model 自带）
     embedding_key: str = "latent"         # 评测读取的 obsm key
     artifacts: tuple = ()                 # 产物说明，供报告展示
+    # ---- 第二模态（跨模态模型专用）----
+    needs_second_modality: bool = False   # True = 必须提供配对第二模态数据（如 ATAC）
+    second_modality: str = ""             # 第二模态类型标识（atac / adt / ...），空=无
+    second_embedding_key: str = ""        # 第二模态嵌入写入第二模态数据的 obsm key
+    cross_modal_eval: bool = False        # 是否计算跨模态一致性指标
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -207,22 +212,71 @@ class ModelBackend:
         """「对模型配置的影响」句式（写入 01_数据状况.md）。"""
         return []
 
+    # ---------------- 第二模态钩子（needs_second_modality=True 时生效）----------------
+    def judge_second_modality(self, atac, rna=None) -> list:
+        """第二模态判定项：格式是否可解析、是否与 RNA 配对、是否满足建模要求。
+
+        返回结构与 judge() 的 verdicts 一致（item/status/evidence/action），
+        由 preprocess 阶段合并进判定契约 —— 任一 FAIL 会让预处理阶段失败。
+        """
+        from app.tools.models.modalities import judge_atac  # 惰性导入避免循环
+
+        return judge_atac(atac, rna)
+
+    def prepare_second_modality(self, atac, params: dict, rna=None):
+        """按模型要求加工第二模态（默认走标准 ATAC 流程：对齐细胞 -> 排序 -> 二值化 -> 过滤峰 -> TF-IDF -> 归一）。"""
+        from app.tools.models.modalities import prepare_atac  # 惰性导入避免循环
+
+        return prepare_atac(atac, params or {}, name=self.name, rna=rna)
+
+    def describe_second_modality(self, atac) -> dict:
+        """第二模态的规模摘要（供报告展示）。"""
+        from app.tools.models.modalities import describe_atac
+
+        return describe_atac(atac)
+
+    def train_cross_modal(self, adata, second, output_dir: str, cfg: dict) -> dict:
+        """跨模态训练：同时使用 RNA 与第二模态，返回附加信息 dict。
+
+        实现方负责写入：
+        - RNA 侧：adata.obsm[capabilities.embedding_key]（统一评测用）
+        - 第二模态侧：second.obsm[capabilities.second_embedding_key]（跨模态评测用）
+        """
+        raise NotImplementedError(f"{self.name} 声明了 needs_second_modality 但未实现 train_cross_modal")
+
     # ---------------- 训练阶段 ----------------
     def train(self, adata, output_dir: str, cfg: dict) -> dict:
         """训练并把嵌入写入 adata.obsm[capabilities.embedding_key]；返回附加信息 dict。"""
         raise NotImplementedError
 
-    def train_and_eval(self, adata, output_dir: str, cfg: dict) -> dict:
-        """训练 + 评测（在子进程中执行）。产物格式与模型无关。"""
+    def train_and_eval(self, adata, output_dir: str, cfg: dict, second=None) -> dict:
+        """训练 + 评测（在子进程中执行）。产物格式与模型无关。
+
+        second：配对第二模态 AnnData（跨模态模型必传，单模态模型传 None）。
+        """
         emit("training_log", {"message": f"初始化 {self.name} 模型"})
-        info = self.train(adata, output_dir, cfg) or {}
+        if second is not None:
+            info = self.train_cross_modal(adata, second, output_dir, cfg) or {}
+        else:
+            info = self.train(adata, output_dir, cfg) or {}
 
         if not self.capabilities.evaluates_internally:
             emit("training_log", {"message": "训练完成，开始计算嵌入评测指标"})
             self.evaluate(adata, output_dir)
 
         metrics = read_summary_metrics(os.path.join(output_dir, SUMMARY_CSV))
-        emit("training_log", {"message": "评测完成", "metrics": metrics})
+
+        cross = {}
+        if second is not None and self.capabilities.cross_modal_eval:
+            emit("training_log", {"message": "开始计算跨模态一致性指标"})
+            try:
+                cross = self.evaluate_cross_modal(adata, second, output_dir) or {}
+            except Exception as e:  # 跨模态指标失败不应让整条流水线失败
+                emit("training_log", {"message": f"跨模态评测失败（已跳过）：{type(e).__name__}: {e}"})
+                cross = {}
+
+        emit("training_log", {"message": "评测完成", "metrics": metrics,
+                              "cross_modal": cross or None})
 
         out = {
             "status": "success",
@@ -230,6 +284,8 @@ class ModelBackend:
             "model_name": self.name,
             "metrics": json_safe(metrics),
         }
+        if cross:
+            out["cross_modal"] = json_safe(cross)
         out.update({k: v for k, v in info.items() if v is not None})
         out.setdefault("model_dir", os.path.join(output_dir, "model"))
         return out
@@ -248,6 +304,25 @@ class ModelBackend:
             embedding_key=self.capabilities.embedding_key,
             outdir=output_dir,
         )
+
+    def evaluate_cross_modal(self, adata, second, output_dir: str) -> dict:
+        """跨模态一致性评测（模型无关，只要求两个 obsm 都就位）。
+
+        指标口径（写入 cross_modal_metrics.csv）：
+        - ATAC_ARI/AMI/NMI/HOM：仅用第二模态嵌入聚类后与 cell_type 的一致性
+        - RNA_ARI/AMI/NMI/HOM   ：仅用 RNA 嵌入聚类后与 cell_type 的一致性（与统一评测同源，便于对照）
+        - Modality_Align        ：配对细胞在两个嵌入空间中的余弦相似度均值（越高说明两模态越对齐）
+        - Cross_KNN_Acc         ：以 RNA 嵌入 + cell_type 训练 KNN，在第二模态嵌入上预测标签的准确率
+        """
+        from app.tools.models.modalities import cross_modal_metrics  # 惰性导入
+
+        result = cross_modal_metrics(
+            adata, second,
+            rna_key=self.capabilities.embedding_key,
+            second_key=self.capabilities.second_embedding_key or "latent_atac",
+            outdir=output_dir,
+        )
+        return result
 
     # ---------------- 对外描述（API / 前端）----------------
     def get_description(self) -> str:

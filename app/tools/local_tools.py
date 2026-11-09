@@ -36,29 +36,36 @@ def _resolve_preprocess_mode() -> tuple:
 
 
 def preprocess_dataset(task_id: int, dataset_id: int, dataset_path: str, output_dir: str,
-                       model: str = None, model_params: dict = None) -> dict:
+                       model: str = None, model_params: dict = None,
+                       atac_path: str = None) -> dict:
     """预处理阶段入口：选决策层 -> 决策 -> 确定性收尾。
 
     「改数据」的决策由 LLM（ReAct）或确定性规则（pipeline）完成；
     「加工/分析/报告/存档」始终由 preprocess_tools.finalize_preprocess 执行，两条路径产物一致。
     ReAct 链路自身异常时回退 pipeline，任务不会因 LLM 不可用而失败。
+
+    atac_path：跨模态模型（scButterfly / scCrossTalk）的配对 ATAC 数据；单模态模型忽略。
     """
     mode, fast_path = _resolve_preprocess_mode()
     if mode == "pipeline":
         return run_preprocess(task_id, dataset_id, dataset_path, output_dir,
-                              model=model, model_params=model_params)
+                              model=model, model_params=model_params, atac_path=atac_path)
 
     # 惰性导入：未启用 ReAct 时不加载 langgraph / langchain 工具层
     try:
         from app.graph.preprocess_agent import run_preprocess_react
         return run_preprocess_react(task_id, dataset_id, dataset_path, output_dir,
                                     model=model, model_params=model_params,
-                                    fast_path_if_clean=fast_path)
+                                    fast_path_if_clean=fast_path, atac_path=atac_path)
+    except ValueError:
+        # 数据/输入不合法的明确报错（例如跨模态模型缺配对 ATAC）必须往上抛，
+        # 回退 pipeline 只会得到同一个错误，还会掩盖真实原因。
+        raise
     except Exception as e:
         emit("preprocess_warn", {
             "message": f"ReAct 预处理失败，回退确定性链路：{type(e).__name__}: {e}"})
         return run_preprocess(task_id, dataset_id, dataset_path, output_dir,
-                              model=model, model_params=model_params)
+                              model=model, model_params=model_params, atac_path=atac_path)
 
 
 def _resolve_training_mode() -> str:

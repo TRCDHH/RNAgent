@@ -2,8 +2,11 @@
 
 - 数据库：rnagent
 - 用户：rnagent / 123456
-- 表：dataset(id, name, path, create_time)
+- 表：dataset(id, name, path, atac_path, create_time)
       task(id, name, path, model, dataset_id, process(json), create_time)
+
+atac_path：跨模态模型（scButterfly / scCrossTalk）所需的配对 ATAC 数据。
+单模态模型忽略该字段；为空表示该数据集没有第二模态数据。
 """
 
 import json
@@ -50,6 +53,7 @@ def init_schema():
                     id BIGINT PRIMARY KEY AUTO_INCREMENT,
                     name VARCHAR(255) NOT NULL,
                     path VARCHAR(512) NOT NULL,
+                    atac_path VARCHAR(512) NULL,
                     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
@@ -98,6 +102,16 @@ def init_schema():
             if "dataset_id" in added:
                 _backfill_dataset_id(cur)
 
+            # 跨模态模型上线后新增：dataset.atac_path（配对 ATAC 数据路径）
+            cur.execute(
+                """
+                SELECT COUNT(*) AS n FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'dataset' AND COLUMN_NAME = 'atac_path'
+                """
+            )
+            if not (cur.fetchone() or {}).get("n"):
+                cur.execute("ALTER TABLE dataset ADD COLUMN atac_path VARCHAR(512) NULL AFTER path")
+
 
 def _backfill_dataset_id(cur):
     """给历史任务回填 dataset_id：从 process JSON 的事件里提取（一次性、幂等）。
@@ -124,21 +138,23 @@ def _backfill_dataset_id(cur):
 def list_datasets():
     with conn_ctx() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name, path, create_time FROM dataset ORDER BY id DESC")
+            cur.execute("SELECT id, name, path, atac_path, create_time FROM dataset ORDER BY id DESC")
             return cur.fetchall()
 
 
-def create_dataset(name: str, path: str) -> int:
+def create_dataset(name: str, path: str, atac_path: str = None) -> int:
     with conn_ctx() as conn:
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO dataset (name, path) VALUES (%s, %s)", (name, path))
+            cur.execute("INSERT INTO dataset (name, path, atac_path) VALUES (%s, %s, %s)",
+                        (name, path, atac_path or None))
             return cur.lastrowid
 
 
 def get_dataset(dataset_id: int):
     with conn_ctx() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name, path, create_time FROM dataset WHERE id = %s", (dataset_id,))
+            cur.execute("SELECT id, name, path, atac_path, create_time FROM dataset WHERE id = %s",
+                        (dataset_id,))
             return cur.fetchone()
 
 

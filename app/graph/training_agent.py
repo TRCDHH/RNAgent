@@ -267,7 +267,7 @@ def run_model_stage_react(task_id: int, output_dir: str, preprocess: dict = None
             "message": f"第 1/{session.max_attempts} 次训练尝试：使用规则默认参数（未调用 LLM）"})
         t0 = time.time()
         first = attempt_training(ctx["rna_path"], output_dir, ctx["base_config"],
-                                 model=ctx["backend"].key)
+                                 model=ctx["backend"].key, atac_path=ctx.get("atac_path"))
         elapsed = round(time.time() - t0, 1)
         session.record_attempt(ctx["base_config"], first, elapsed)
         emit("training_attempt", {

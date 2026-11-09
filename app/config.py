@@ -31,6 +31,18 @@ SCLINFORMER_DIR = os.environ.get(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "model", "scLinformer-main")),
 )
 
+# ---- 跨模态（RNA ↔ ATAC）模型源码目录 ----
+# scButterfly：指向包目录本身（内含 train_model.py / model_component.py）
+SCBUTTERFLY_DIR = os.environ.get(
+    "SCBUTTERFLY_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "model", "scButterfly", "scButterfly")),
+)
+# scCrossTalk：指向仓库根目录（内含 scCrossTalk/ 包与 gene_vocab.json）
+SCROSSTALK_DIR = os.environ.get(
+    "SCROSSTALK_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "model", "scCrossTalk-main")),
+)
+
 # ---- 预处理阶段模式（ReAct 决策层）----
 # pipeline：现有确定性链路（默认，行为与历史完全一致）
 # react   ：始终由 LLM 通过 skill 描述与工具调用自主决策

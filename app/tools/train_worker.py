@@ -53,7 +53,18 @@ def main():
         _append_progress(prog_path, "数据加载完成",
                          n_cells=int(adata.n_obs), n_genes=int(adata.n_vars))
 
-        result = backend.train_and_eval(adata, output_dir, job["model_config"])
+        second = None
+        atac_path = job.get("atac_path")
+        if backend.capabilities.needs_second_modality:
+            if not atac_path:
+                raise ValueError(
+                    f"模型 {backend.name} 需要配对 {backend.capabilities.second_modality.upper()} 数据，"
+                    f"但训练任务里没有 atac_path")
+            second = sc.read_h5ad(atac_path)
+            _append_progress(prog_path, "配对第二模态加载完成",
+                             n_cells=int(second.n_obs), n_features=int(second.n_vars))
+
+        result = backend.train_and_eval(adata, output_dir, job["model_config"], second=second)
 
         with open(result_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, default=str)

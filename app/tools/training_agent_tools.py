@@ -152,7 +152,8 @@ def retrain(params: dict, reason: str) -> dict:
     # ---- 真实执行一次训练尝试 ----
     s.current_params = merged
     t0 = time.time()
-    outcome = attempt_training(s.rna_path, s.output_dir, merged, model=s.backend.key)
+    outcome = attempt_training(s.rna_path, s.output_dir, merged, model=s.backend.key,
+                               atac_path=getattr(s, "atac_path", None))
     elapsed = round(time.time() - t0, 1)
 
     s.record_attempt(merged, outcome, elapsed)

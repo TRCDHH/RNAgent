@@ -23,6 +23,7 @@ class TrainingSession:
         # 训练上下文（来自 model_tools.prepare_training_context）
         self.backend = ctx["backend"]
         self.rna_path = ctx["rna_path"]
+        self.atac_path = ctx.get("atac_path")   # 跨模态模型的第二模态（已预处理）
         self.env = ctx.get("env") or {}
         self.n_cells = ctx.get("n_cells")
         self.n_genes = ctx.get("n_genes")

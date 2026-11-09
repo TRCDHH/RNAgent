@@ -12,13 +12,16 @@ from app.graph.builder import build_app
 
 def run_pipeline(task_id: int = 1, dataset_id: int = 3,
                  dataset_path: str = None, output_dir: str = None,
-                 model: str = None, model_params: dict = None) -> dict:
+                 model: str = None, model_params: dict = None,
+                 atac_path: str = None) -> dict:
     from app.tools.models import default_key, get_backend
 
     backend = get_backend(model)
     set_context(task_id, f"trace_{task_id}")
     emit("pipeline_start", {"task_id": task_id, "dataset_id": dataset_id,
-                            "model": backend.key, "model_name": backend.name})
+                            "model": backend.key, "model_name": backend.name,
+                            "needs_second_modality": backend.capabilities.needs_second_modality,
+                            "second_modality": backend.capabilities.second_modality or None})
 
     app = build_app()
     config = {"configurable": {"thread_id": f"task_{task_id}"}}
@@ -26,6 +29,7 @@ def run_pipeline(task_id: int = 1, dataset_id: int = 3,
         "task_id": task_id,
         "dataset_id": dataset_id,
         "dataset_path": dataset_path or "/data/demo.h5ad",
+        "atac_path": atac_path,
         "output_dir": output_dir or ".",
         "config": {},
         "model": model or default_key(),

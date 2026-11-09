@@ -26,6 +26,8 @@ CLUSTER_CSV = "cluster_metrics.csv"
 BATCH_CSV = "batch_metrics.csv"
 UMAP_CELL = "umap_cell_type.png"
 UMAP_BATCH = "umap_batch.png"
+# 跨模态模型（scButterfly / scCrossTalk）的辅助指标
+CROSS_CSV = "cross_modal_metrics.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +80,7 @@ def collect_report_context(output_dir, preprocess, training, dataset_id) -> dict
     summary = training.get("metrics") or _read_csv(os.path.join(output_dir, SUMMARY_CSV)) or {}
     cluster = _read_csv(os.path.join(output_dir, CLUSTER_CSV))
     batch = _read_csv(os.path.join(output_dir, BATCH_CSV)) or {}
+    cross = training.get("cross_modal") or _read_csv(os.path.join(output_dir, CROSS_CSV)) or {}
 
     images = {}
     if os.path.exists(os.path.join(output_dir, UMAP_CELL)):
@@ -106,12 +109,19 @@ def collect_report_context(output_dir, preprocess, training, dataset_id) -> dict
         },
         "train_config": cfg,
         "env": env,
-        "metrics": {"summary": summary, "cluster": cluster, "batch": batch},
+        "metrics": {"summary": summary, "cluster": cluster, "batch": batch,
+                    "cross_modal": cross},
+        "second_modality": {
+            "kind": preprocess.get("second_modality") or training.get("second_modality"),
+            "metadata": preprocess.get("second_metadata") or {},
+            "path": training.get("atac_path") or preprocess.get("second_processed_path"),
+        },
         "images": images,
         "artifacts": {
             "model_dir": training.get("model_dir"),
             "processed_dir": training.get("processed_dir"),
             "processed_path": training.get("processed_path"),
+            "second_processed_path": preprocess.get("second_processed_path"),
             "analysis_dir": (preprocess.get("report") or {}).get("analysis_dir"),
         },
     })
@@ -133,6 +143,24 @@ CAPABILITY_LABELS = {
     "supports_celltype": "支持 cell_type 信息",
     "evaluates_internally": "内部评测",
     "embedding_key": "嵌入键",
+    "needs_second_modality": "需要第二模态",
+    "second_modality": "第二模态类型",
+    "second_embedding_key": "第二模态嵌入键",
+    "cross_modal_eval": "跨模态评测",
+}
+
+# 跨模态指标的中文说明（与 modalities.cross_modal_metrics 的列名对应）
+CROSS_METRIC_META = {
+    "RNA_ARI": ("RNA 侧 ARI", "RNA 嵌入聚类与 cell_type 的一致性"),
+    "ATAC_ARI": ("ATAC 侧 ARI", "仅用 ATAC 嵌入聚类与 cell_type 的一致性"),
+    "RNA_AMI": ("RNA 侧 AMI", "RNA 嵌入聚类的调整互信息"),
+    "ATAC_AMI": ("ATAC 侧 AMI", "ATAC 嵌入聚类的调整互信息"),
+    "RNA_NMI": ("RNA 侧 NMI", "RNA 嵌入聚类的归一化互信息"),
+    "ATAC_NMI": ("ATAC 侧 NMI", "ATAC 嵌入聚类的归一化互信息"),
+    "RNA_HOM": ("RNA 侧 HOM", "RNA 聚类的同质性"),
+    "ATAC_HOM": ("ATAC 侧 HOM", "ATAC 聚类的同质性"),
+    "Modality_Align": ("模态对齐度", "配对细胞在两模态 latent 空间的余弦相似度均值"),
+    "Cross_KNN_Acc": ("跨模态标签迁移准确率", "RNA 嵌入训练的 KNN 在 ATAC 嵌入上的 cell_type 预测准确率"),
 }
 
 METRIC_META = {
@@ -397,6 +425,52 @@ def _build_fragments(context: dict) -> dict:
     else:
         umap_hint = ""
 
+    # ---- 6. 跨模态一致性（仅跨模态模型）----
+    cross = m.get("cross_modal") or {}
+    second = context.get("second_modality") or {}
+    if isinstance(cross, dict):
+        cross = {k: v for k, v in cross.items() if k != "csv_path"}
+    if isinstance(cross, list):   # CSV 有多行时取第一行，避免模板渲染出 [object Object]
+        cross = cross[0] if cross else {}
+
+    if cross:
+        smeta = second.get("metadata") or {}
+        cross_stats = "".join([
+            _stat("第二模态类型", str(second.get("kind") or "atac").upper(), small=True),
+            _stat(f"配对细胞数 / 峰数",
+                  f"{_num(smeta.get('n_cells'))} / {_num(smeta.get('n_peaks'))}", small=True),
+            _stat("模态对齐度（余弦）", _num(cross.get("Modality_Align"))),
+            _stat("跨模态标签迁移准确率", _num(cross.get("Cross_KNN_Acc"))),
+        ])
+        cross_rows = "".join(
+            f"<tr><td>{_esc(CROSS_METRIC_META.get(k, (k, ''))[0])}</td>"
+            f"<td class=\"num\">{_num(v)}</td>"
+            f"<td><code>{_esc(k)}</code></td>"
+            f"<td>{_esc(CROSS_METRIC_META.get(k, ('', ''))[1])}</td></tr>"
+            for k, v in cross.items()
+        )
+        _ch = []
+        align = cross.get("Modality_Align")
+        if isinstance(align, (int, float)):
+            _ch.append("两模态 latent 高度对齐" if align >= 0.7 else
+                       ("两模态 latent 基本对齐" if align >= 0.4 else "两模态 latent 对齐偏弱"))
+        acc = cross.get("Cross_KNN_Acc")
+        if isinstance(acc, (int, float)):
+            _ch.append(f"ATAC 嵌入可预测 RNA 细胞类型（准确率 {acc:.2f}）" if acc >= 0.6
+                       else "ATAC 嵌入跨模态迁移能力偏弱")
+        ri, ai = cross.get("RNA_ARI"), cross.get("ATAC_ARI")
+        if isinstance(ri, (int, float)) and isinstance(ai, (int, float)):
+            _ch.append("RNA 侧聚类一致性优于 ATAC 侧" if ri >= ai else "ATAC 侧聚类一致性优于 RNA 侧")
+        cross_hint = ('<div class="hint">' + "，".join(_ch) + "。"
+                      '跨模态指标用确定性 KMeans（k=细胞类型数）计算，与主表的 leiden-ARI '
+                      '口径不同，仅用于两模态对照。</div>') if _ch else ""
+    else:
+        cross_stats = _stat("跨模态评测", "不适用（单模态模型）", small=True)
+        cross_rows = ('<tr><td colspan="4">本模型为单模态模型，未产生跨模态指标。'
+                      '接入 scButterfly / scCrossTalk 等跨模态模型时会输出 ATAC_ARI / '
+                      'Modality_Align / Cross_KNN_Acc 等对照指标。</td></tr>')
+        cross_hint = ""
+
     # 综合判断：一句话定性，不复述数字、不重复结论与建议
     _w = []
     if b_asw is None and gc is None:
@@ -444,6 +518,9 @@ def _build_fragments(context: dict) -> dict:
         "BATCH_HINT": batch_hint,
         "UMAP_IMAGES": umap_images,
         "UMAP_HINT": umap_hint,
+        "CROSS_MODAL_STATS": cross_stats,
+        "CROSS_MODAL_ROWS": cross_rows,
+        "CROSS_MODAL_HINT": cross_hint,
         "CONCLUSION_LIST": "".join(f"<li>{c}</li>" for c in conclusions),
         "SUGGESTION_LIST": "".join(f"<li>{s}</li>" for s in suggestions),
         "FOOTER": ("本报告由 RNAgent 流水线自动生成 · 版式由 skills/registry/report-generation/"
@@ -542,7 +619,20 @@ def _rule_narrative(context: dict) -> tuple:
     if (cond.get("judge_status") or "").upper() not in ("", "PASS"):
         conclusions.append(f"数据判定为 {_esc(cond.get('judge_status'))}，建议先处理告警项。")
 
+    cross = (context.get("metrics") or {}).get("cross_modal") or {}
+    if isinstance(cross, list):
+        cross = cross[0] if cross else {}
+    if cross:
+        align = cross.get("Modality_Align")
+        if isinstance(align, (int, float)):
+            conclusions.append("两模态 latent 对齐良好。" if align >= 0.7 else "两模态 latent 对齐偏弱。")
+        acc = cross.get("Cross_KNN_Acc")
+        if isinstance(acc, (int, float)) and acc < 0.6:
+            conclusions.append("ATAC 侧跨模态标签迁移能力有限。")
+
     suggestions = []
+    if cross and isinstance(cross.get("Cross_KNN_Acc"), (int, float)) and cross["Cross_KNN_Acc"] < 0.6:
+        suggestions.append("增加翻译器训练轮数，或提高 ATAC 峰覆盖度。")
     ep = epochs if isinstance(epochs, int) else None
     if ep is not None and ep < 20:
         suggestions.append("提高 epochs 至 50 以上，对比 ARI 是否上升。")

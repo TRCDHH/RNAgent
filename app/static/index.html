@@ -413,6 +413,12 @@
         <input id="dsPath" placeholder="D:\data\BMMC-RNA.h5ad" />
         <em class="tip">填服务器/本机上的绝对路径。支持 <b>.h5ad</b> 文件、<b>10x 输出目录</b>（含 matrix.mtx）、<b>.csv</b> 表达矩阵。</em>
       </label>
+      <label class="field">
+        <span>配对 ATAC 路径（可选）</span>
+        <input id="dsAtac" placeholder="D:\data\BMMC-ATAC.h5ad" />
+        <em class="tip">仅 <b>跨模态模型</b>（scButterfly / scCrossTalk）需要：与上面 RNA 同一批细胞的 ATAC peak 矩阵，
+          峰名必须是 <b>chr1:1000-2000</b> 形式。单模态模型会忽略此项。</em>
+      </label>
     </div>
     <div class="modal-foot">
       <button class="plain" id="dsCancel">取消</button>
@@ -424,7 +430,8 @@
 <script>
   let currentTask = null, es = null;
   let MODELS = [], DEFAULT_MODEL = "sclinformer", selectedModel = null;
-  let TASKS = [];   // 任务列表缓存，供 openTask 查模型等信息
+  let TASKS = [];     // 任务列表缓存，供 openTask 查模型等信息
+  let DATASETS = [];  // 数据集缓存，供 startAnalysis 校验配对 ATAC
 
   /** 模型 key -> 展示名；未知返回 key 本身，空返回「未知模型」 */
   function modelLabel(key) {
@@ -452,6 +459,9 @@
          <span>
            <span class="mc-name">${esc(m.name)}
              <span class="mc-tag ${m.available ? "" : "off"}">${m.available ? "可用" : "不可用"}</span>
+             ${(m.capabilities && m.capabilities.needs_second_modality)
+                ? `<span class="mc-tag" title="需要数据集提供配对 ${esc((m.capabilities.second_modality || "atac").toUpperCase())}">跨模态</span>`
+                : ""}
            </span>
            <span class="mc-desc">${esc(m.available ? (m.description || "") : (m.reason || "环境未就绪"))}</span>
          </span>`;
@@ -477,6 +487,7 @@
   /* ---------------- 数据集 ---------------- */
   async function loadDatasets() {
     const d = await (await fetch("/api/datasets")).json();
+    DATASETS = d.datasets || [];
     const box = document.getElementById("dsList");
     document.getElementById("dsCount").textContent = d.datasets.length;
     if (!d.datasets.length) { box.innerHTML = '<div class="empty">暂无数据集</div>'; return; }
@@ -484,9 +495,13 @@
     d.datasets.forEach(ds => {
       const el = document.createElement("div");
       el.className = "item";
+      const atac = ds.atac_path
+        ? `<div class="sub" title="配对 ATAC：${esc(ds.atac_path)}">ATAC：${esc(ds.atac_path)}</div>`
+        : "";
       el.innerHTML =
         `<div class="row1"><span class="title">#${ds.id} ${esc(ds.name)}</span></div>
          <div class="sub">${esc(ds.path)}</div>
+         ${atac}
          <div class="actions">
            <button data-run="${ds.id}">开始分析</button>
            <button class="ghost danger" data-del="${ds.id}">删除</button>
@@ -507,10 +522,12 @@
   const dsModal = document.getElementById("dsModal");
   const dsNameEl = document.getElementById("dsName");
   const dsPathEl = document.getElementById("dsPath");
+  const dsAtacEl = document.getElementById("dsAtac");
 
   function openDsModal() {
     dsNameEl.value = "";
     dsPathEl.value = "";
+    dsAtacEl.value = "";
     dsModal.classList.add("show");
     setTimeout(() => dsNameEl.focus(), 30);
   }
@@ -519,6 +536,7 @@
   async function createDataset() {
     const name = dsNameEl.value.trim();
     const path = dsPathEl.value.trim();
+    const atac_path = dsAtacEl.value.trim();
     if (!name) { alert("请填写数据集名称"); dsNameEl.focus(); return; }
     if (!path) { alert("请填写数据的本地路径"); dsPathEl.focus(); return; }
 
@@ -527,7 +545,7 @@
     try {
       const r = await fetch("/api/datasets", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, path })
+        body: JSON.stringify({ name, path, atac_path: atac_path || null })
       });
       if (!r.ok) { alert("添加失败，请检查后端日志"); return; }
       closeDsModal();
@@ -548,7 +566,7 @@
   document.addEventListener("keydown", e => {
     if (e.key === "Escape" && dsModal.classList.contains("show")) closeDsModal();
   });
-  [dsNameEl, dsPathEl].forEach(el => {
+  [dsNameEl, dsPathEl, dsAtacEl].forEach(el => {
     el.addEventListener("keydown", e => { if (e.key === "Enter") createDataset(); });
   });
 
@@ -758,6 +776,16 @@
   async function startAnalysis(datasetId) {
     const m = currentModel();
     if (!m || !m.available) { alert("没有可用的分析模型"); return; }
+
+    // 跨模态模型（scButterfly / scCrossTalk）必须先在数据集上登记配对 ATAC
+    const ds = (DATASETS || []).find(x => x.id === datasetId);
+    const needSecond = m.capabilities && m.capabilities.needs_second_modality;
+    if (needSecond && !(ds && ds.atac_path)) {
+      alert(`模型 ${m.name} 是跨模态模型，需要配对 ${(m.capabilities.second_modality || "ATAC").toUpperCase()} 数据。\n`
+          + `请重新添加数据集并为它填写「配对 ATAC 路径」。`);
+      return;
+    }
+
     resetStages(); clearTimeline();
     document.getElementById("logSub").textContent = "启动中…";
 

@@ -806,7 +806,20 @@ def _render_analysis_report(result: dict) -> str:
             lines.append(f"- {v['evidence']}")
     lines.append("")
 
-    lines.append("## 7. 附图")
+    # 跨模态模型（scButterfly / scCrossTalk）：补充第二模态规模
+    second = result.get("second_metadata") or {}
+    if second:
+        lines.append("## 7. 配对第二模态（ATAC）")
+        lines.append("")
+        lines.append(f"- 细胞数：{second.get('n_cells')}")
+        lines.append(f"- 峰数（过滤后）：{second.get('n_peaks')}")
+        lines.append(f"- 覆盖染色体：{second.get('n_chroms')} 条")
+        lines.append(f"- 稀疏度：{second.get('sparsity')}")
+        lines.append("- 预处理：对齐细胞顺序 → 按染色体排序 → 二值化 → 过滤低出现峰 → TF-IDF → 缩放到 [0,1]")
+        lines.append("")
+        lines.append("## 8. 附图")
+    else:
+        lines.append("## 7. 附图")
     lines.append("")
     for name, path in figures.items():
         lines.append(f"- {name}：`{path}`")
@@ -840,19 +853,39 @@ def save_dataset(adata, outdir: str) -> dict:
         return {"status": "error", "error": str(e), "traceback": _err_info(e)}
 
 
+def save_second_modality(adata, outdir: str, filename: str = "processed_atac.h5ad") -> dict:
+    """保存加工后的第二模态数据（跨模态模型训练阶段读取）。"""
+    try:
+        os.makedirs(outdir, exist_ok=True)
+        path = os.path.join(outdir, filename)
+        adata.write_h5ad(path)
+        return {"status": "ok", "path": path}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "traceback": _err_info(e)}
+
+
+def merge_verdicts(verdicts: dict, extra: list) -> dict:
+    """把第二模态的判定项合并进主判定结果，并重算整体状态（FAIL > WARNING > PASS）。"""
+    verdicts = verdicts or {}
+    items = list(verdicts.get("verdicts") or []) + list(extra or [])
+    status = "PASS" if all(v.get("status") == "PASS" for v in items) else (
+        "FAIL" if any(v.get("status") == "FAIL" for v in items) else "WARNING")
+    return {"status": status, "verdicts": _json_safe(items)}
+
+
 # ---------------------------------------------------------------------------
 # 编排入口：load_data -> judge -> 修复 -> 再 judge -> 数据分析 -> 报告 -> 保存
 # ---------------------------------------------------------------------------
 def run_preprocess(task_id: int, dataset_id: int, dataset_path: str, output_dir: str,
-                   model: str = None, model_params: dict = None) -> dict:
+                   model: str = None, model_params: dict = None, atac_path: str = None) -> dict:
     """预处理阶段编排（确定性主链路，execute_code 作为兜底）。
 
     model / model_params 由用户在选择模型时传入：
     - 判定契约会追加该模型的专属判定项（judge_extra）；
     - 数据加工按该模型声明的能力位执行（prepare_data，如 scVI 需要 counts 层 + HVG）。
+    atac_path：跨模态模型（scButterfly / scCrossTalk）的配对 ATAC 数据路径；
+               单模态模型忽略该参数。
     """
-    import scanpy as sc  # noqa: E402
-
     backend = get_backend(model)
     params = {**backend.default_params(), **backend.merge_overrides(model_params)}
 
@@ -883,16 +916,33 @@ def run_preprocess(task_id: int, dataset_id: int, dataset_path: str, output_dir:
     audit_log.append({"time": datetime.now().isoformat(), "op": "re_judge",
                       "detail": json.dumps(verdicts, ensure_ascii=False)})
 
+    # 4.5) 第二模态（跨模态模型）：加载 + 判定，任一 FAIL 直接终止
+    second = None
+    second_path = (atac_path or "").strip() or None
+    if backend.capabilities.needs_second_modality:
+        if not second_path:
+            raise ValueError(
+                f"模型 {backend.name} 是跨模态模型，需要数据集的「配对 ATAC 路径」；"
+                f"请在数据集上补充 ATAC 数据")
+        emit("preprocess_log", {"message": f"加载配对 {backend.capabilities.second_modality.upper()} 数据：{second_path}"})
+        second = _read_data(second_path)
+        atac_verdicts = backend.judge_second_modality(second, adata)
+        verdicts = merge_verdicts(verdicts, atac_verdicts)
+        audit_log.append({"time": datetime.now().isoformat(), "op": "judge_second_modality",
+                          "detail": json.dumps(atac_verdicts, ensure_ascii=False)})
+        emit("preprocess_log", {"message": f"第二模态判定完成：{verdicts['status']}"})
+
     # 5~8) 确定性收尾（按模型加工 -> 数据分析 -> 报告 -> 保存）
     # 与 ReAct 模式共用同一段收尾，保证两条路径的产物结构与文件名完全一致。
     return finalize_preprocess(
         adata=adata, verdicts=verdicts, output_dir=output_dir, backend=backend,
         params=params, audit_log=audit_log, dataset_path=dataset_path,
+        second=second, second_path=second_path,
     )
 
 
 def finalize_preprocess(adata, verdicts, output_dir, backend, params, audit_log,
-                        dataset_path: str = "") -> dict:
+                        dataset_path: str = "", second=None, second_path: str = "") -> dict:
     """确定性收尾（**不经 LLM**）：按模型能力位加工 -> 数据分析 -> 报告 -> 保存。
 
     两条路径共用本函数，这是本方案划定的架构边界：
@@ -900,6 +950,8 @@ def finalize_preprocess(adata, verdicts, output_dir, backend, params, audit_log,
     - pipeline 模式：run_preprocess() 在 _auto_repair 后调用；
     - ReAct 模式：app/graph/preprocess_agent.py 在 LLM 决策循环结束后调用。
     因此模型契约（backend.prepare_data）永远不会被 LLM 绕过或改写。
+
+    second / second_path：跨模态模型的第二模态（原始 AnnData）与其来源路径。
     """
     # 5) 按模型加工数据（能力位驱动，不出现模型名）
     adata = backend.prepare_data(adata, params)
@@ -908,6 +960,21 @@ def finalize_preprocess(adata, verdicts, output_dir, backend, params, audit_log,
     emit("preprocess_log", {"message": f"已按 {backend.name} 要求完成数据加工"})
     # 加工后重算元数据，保证报告展示的规模与模型实际输入一致
     metadata = _describe(adata, dataset_path)
+
+    # 5.5) 第二模态加工（对齐细胞 -> 排序 -> 二值化 -> 过滤峰 -> TF-IDF -> 归一）
+    second_meta, second_processed_path = None, None
+    if backend.capabilities.needs_second_modality and second is not None:
+        second = backend.prepare_second_modality(second, params, rna=adata)
+        second_meta = backend.describe_second_modality(second)
+        saved_second = save_second_modality(second, output_dir)
+        second_processed_path = saved_second.get("path")
+        audit_log.append({"time": datetime.now().isoformat(), "op": "prepare_second_modality",
+                          "detail": json.dumps({"path": second_path,
+                                                "result": second_processed_path,
+                                                "metadata": second_meta}, ensure_ascii=False)})
+        emit("preprocess_log", {
+            "message": f"第二模态已加工：{second_meta.get('n_cells')} 细胞 × "
+                       f"{second_meta.get('n_peaks')} 峰（{second_meta.get('n_chroms')} 条染色体）"})
 
     # 6) 数据分析
     qc = qc_stats(adata)
@@ -924,6 +991,8 @@ def finalize_preprocess(adata, verdicts, output_dir, backend, params, audit_log,
         "figures": figures,
         "audit_log": audit_log,
         "model": backend.key,
+        "second_modality": backend.capabilities.second_modality or None,
+        "second_metadata": second_meta,
     }
     report = generate_report(result, output_dir)
     emit("preprocess_log", {"message": f"已生成数据处理结果分析：{report['analysis_dir']}"})
@@ -938,6 +1007,10 @@ def finalize_preprocess(adata, verdicts, output_dir, backend, params, audit_log,
         "metadata": metadata,
         "report": report,
         "processed_path": saved.get("path"),
+        "second_modality": backend.capabilities.second_modality or None,
+        "second_path": second_path,
+        "second_processed_path": second_processed_path,
+        "second_metadata": second_meta,
         "model": backend.key,
         "model_name": backend.name,
         "model_params": params,

@@ -12,6 +12,7 @@ class PipelineState(TypedDict, total=False):
     task_id: int
     dataset_id: int
     dataset_path: str
+    atac_path: str        # 配对 ATAC 路径（跨模态模型需要，单模态模型为空）
     output_dir: str       # 任务工作目录（输出结果目录）
     config: dict          # 由 Agent 自动生成，用户不填
     model: str            # 选择的模型 key（sclinformer / scvi / ...），空=默认模型

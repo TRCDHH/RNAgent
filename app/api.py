@@ -146,11 +146,12 @@ def list_datasets():
 class DatasetIn(BaseModel):
     name: str
     path: str
+    atac_path: str = None      # 跨模态模型的配对 ATAC 数据（可选；单模态模型忽略）
 
 
 @app.post("/api/datasets")
 def create_dataset(body: DatasetIn):
-    dataset_id = db.create_dataset(body.name, body.path)
+    dataset_id = db.create_dataset(body.name, body.path, body.atac_path)
     return {"id": dataset_id}
 
 
@@ -204,6 +205,17 @@ def run_task(body: RunIn):
     if not ok:
         raise HTTPException(status_code=400, detail=f"模型 {backend.name} 不可用：{reason}")
 
+    # 跨模态模型必须先登记配对 ATAC：早失败比跑到训练阶段再崩清楚得多
+    atac_path = (ds.get("atac_path") or "").strip() or None
+    if backend.capabilities.needs_second_modality:
+        if not atac_path:
+            raise HTTPException(
+                status_code=400,
+                detail=f"模型 {backend.name} 是跨模态模型，需要数据集的「配对 ATAC 路径」；"
+                       f"请在数据集 #{body.dataset_id} 上补充 ATAC 数据后重试")
+        if not Path(atac_path).exists():
+            raise HTTPException(status_code=400, detail=f"配对 ATAC 文件不存在：{atac_path}")
+
     try:
         model_params = backend.merge_overrides(body.params)
     except ValueError as e:
@@ -221,17 +233,18 @@ def run_task(body: RunIn):
 
     threading.Thread(
         target=_run_in_thread,
-        args=(task_id, body.dataset_id, ds["path"], output_dir, backend.key, model_params),
+        args=(task_id, body.dataset_id, ds["path"], output_dir, backend.key, model_params,
+              atac_path),
         daemon=True,
     ).start()
     return {"task_id": task_id, "model": backend.key}
 
 
 def _run_in_thread(task_id: int, dataset_id: int, dataset_path: str, output_dir: str,
-                   model: str = None, model_params: dict = None):
+                   model: str = None, model_params: dict = None, atac_path: str = None):
     try:
         outcome = run_pipeline(task_id, dataset_id, dataset_path=dataset_path, output_dir=output_dir,
-                               model=model, model_params=model_params)
+                               model=model, model_params=model_params, atac_path=atac_path)
     finally:
         with _running_lock:
             _running.discard(task_id)
@@ -353,14 +366,16 @@ def replay_task(task_id: int, body: ReplayIn = None):
 
     # 优先用数据集登记的路径；数据集已删除时回退到轨迹里记录的那份
     dataset_path = None
+    atac_path = None
     if t.get("dataset_id"):
         ds = db.get_dataset(t["dataset_id"])
         dataset_path = (ds or {}).get("path")
+        atac_path = (ds or {}).get("atac_path")
 
     body = body or ReplayIn()
     try:
         return run_replay(trace_dir, dataset_path=dataset_path, model=body.model,
-                          output_dir=body.output_dir)
+                          output_dir=body.output_dir, atac_path=atac_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"重放失败：{type(e).__name__}: {e}")
 

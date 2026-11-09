@@ -1,2 +1,10 @@
 [info] LLM=已配置 | 预处理 PREPROCESS_MODE=auto（react/auto 需 LLM，否则降级 pipeline） | 训练 TRAINING_MODE=react（最多 3 次尝试）
 INFO:     127.0.0.1:55822 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55831 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55831 - "GET /api/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55831 - "GET /api/datasets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55831 - "GET /api/tasks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51421 - "GET /api/tasks/10/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51421 - "GET /output/10/report.html HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51421 - "GET /output/10/umap_cell_type.png HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55338 - "GET /output/10/umap_batch.png HTTP/1.1" 200 OK

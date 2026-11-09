@@ -15,11 +15,13 @@ FLUSH PRIVILEGES;
 
 USE rnagent;
 
--- 数据集表：id, 名称, 路径, 创建时间
+-- 数据集表：id, 名称, 路径, 配对ATAC路径, 创建时间
+-- atac_path 仅供跨模态模型（scButterfly / scCrossTalk）使用，单模态模型忽略
 CREATE TABLE IF NOT EXISTS dataset (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     name VARCHAR(255) NOT NULL,
     path VARCHAR(512) NOT NULL,
+    atac_path VARCHAR(512) NULL,
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -38,3 +40,4 @@ CREATE TABLE IF NOT EXISTS task (
 -- ALTER TABLE task ADD COLUMN model VARCHAR(32) NOT NULL DEFAULT 'sclinformer';
 -- ALTER TABLE task ADD COLUMN dataset_id BIGINT NULL;
 -- ALTER TABLE task MODIFY COLUMN process LONGTEXT;   -- TEXT 只有 64KB，长任务事件流会超限
+-- ALTER TABLE dataset ADD COLUMN atac_path VARCHAR(512) NULL AFTER path;  -- 跨模态模型的配对 ATAC

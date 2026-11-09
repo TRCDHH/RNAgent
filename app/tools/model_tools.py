@@ -81,13 +81,15 @@ def _console_safe(text: str) -> str:
 
 
 def _train_and_eval_monitored(rna_path: str, output_dir: str, model_config: dict,
-                              model: str = None) -> dict:
+                              model: str = None, atac_path: str = None) -> dict:
     """在独立子进程中执行「训练 + 评测」，父进程轮询监控。
 
     - 子进程（app.tools.train_worker）按 model 取后端跑训练，崩溃 / OOM / 段错误不影响主服务；
     - 父进程轮询 progress.jsonl 转发生命周期事件、尾随 train_stdout.log 转发模型
       自身输出（epoch 进度等），每 5s 用 psutil 上报子进程 CPU / 内存；
     - 结束后读取 train_result.json 汇总返回；异常则抛出含堆栈的 RuntimeError。
+
+    atac_path：跨模态模型的第二模态（已预处理）路径，单模态模型为 None。
     """
     backend = get_backend(model)
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -100,7 +102,8 @@ def _train_and_eval_monitored(rna_path: str, output_dir: str, model_config: dict
             os.remove(stale)
 
     with open(job_path, "w", encoding="utf-8") as f:
-        json.dump({"rna_path": rna_path, "output_dir": output_dir, "model": backend.key,
+        json.dump({"rna_path": rna_path, "atac_path": atac_path,
+                   "output_dir": output_dir, "model": backend.key,
                    "model_config": _json_safe(model_config)}, f, ensure_ascii=False)
 
     with open(log_path, "w", encoding="utf-8") as logf:
@@ -183,7 +186,8 @@ def _train_and_eval_monitored(rna_path: str, output_dir: str, model_config: dict
 # ---------------------------------------------------------------------------
 # 工具 2：run_model —— 按给定 config 执行训练（Agent 兜底 / 手动调用，当前进程内）
 # ---------------------------------------------------------------------------
-def run_model(rna_path: str, output_dir: str, model_config: dict, model: str = None) -> dict:
+def run_model(rna_path: str, output_dir: str, model_config: dict, model: str = None,
+              atac_path: str = None) -> dict:
     """执行工具：读取 rna_path 的 AnnData，按 model_config 运行所选模型训练 + 评测。"""
     import scanpy as sc  # noqa: E402 惰性导入
     backend = get_backend(model)
@@ -191,7 +195,8 @@ def run_model(rna_path: str, output_dir: str, model_config: dict, model: str = N
     if not ok:
         raise RuntimeError(f"模型 {backend.name} 不可用：{reason}")
     adata = sc.read_h5ad(rna_path)
-    return _json_safe(backend.train_and_eval(adata, output_dir, model_config))
+    second = sc.read_h5ad(atac_path) if atac_path else None
+    return _json_safe(backend.train_and_eval(adata, output_dir, model_config, second=second))
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +239,17 @@ def prepare_training_context(output_dir: str, preprocess: dict = None,
     if not ok:
         raise RuntimeError(f"模型 {backend.name} 不可用：{reason}")
 
+    # 0) 第二模态（跨模态模型）：必须存在预处理产物
+    atac_path = None
+    if backend.capabilities.needs_second_modality:
+        atac_path = (preprocess.get("second_processed_path")
+                     or os.path.join(output_dir, "processed_atac.h5ad"))
+        if not os.path.exists(atac_path):
+            raise FileNotFoundError(
+                f"找不到配对 {backend.capabilities.second_modality.upper()} 预处理产物：{atac_path}"
+                f"（模型 {backend.name} 为跨模态模型，需要数据集提供配对 ATAC 数据）")
+        emit("training_log", {"message": f"配对第二模态已就绪：{atac_path}"})
+
     # 1) 本机环境
     emit("training_log", {"message": "检查本机运行环境（GPU/显存）"})
     env = inspect_environment()
@@ -253,6 +269,7 @@ def prepare_training_context(output_dir: str, preprocess: dict = None,
     return {
         "backend": backend,
         "rna_path": rna_path,
+        "atac_path": atac_path,
         "env": env,
         "n_cells": n_cells,
         "n_genes": n_genes,
@@ -263,7 +280,7 @@ def prepare_training_context(output_dir: str, preprocess: dict = None,
 
 
 def attempt_training(rna_path: str, output_dir: str, model_config: dict,
-                     model: str = None) -> dict:
+                     model: str = None, atac_path: str = None) -> dict:
     """执行**一次**训练尝试，**不抛异常**：成功/失败都以结果字典返回。
 
     与 _train_and_eval_monitored 的唯一区别是失败时的处理方式：后者 raise，
@@ -271,7 +288,8 @@ def attempt_training(rna_path: str, output_dir: str, model_config: dict,
     供 ReAct 恢复循环在失败后继续决策 —— 否则循环会被异常直接打断。
     """
     try:
-        result = _train_and_eval_monitored(rna_path, output_dir, model_config, model=model)
+        result = _train_and_eval_monitored(rna_path, output_dir, model_config,
+                                           model=model, atac_path=atac_path)
         return {"ok": True, "result": result, "error": None, "error_kind": None}
     except Exception as e:
         msg = f"{e}"
@@ -289,12 +307,13 @@ def run_model_stage(task_id: int, output_dir: str, preprocess: dict = None,
 
     # 子进程训练 + 评测（父进程监控进度与资源）
     result = _train_and_eval_monitored(ctx["rna_path"], output_dir, ctx["base_config"],
-                                      model=ctx["backend"].key)
+                                      model=ctx["backend"].key, atac_path=ctx.get("atac_path"))
     result.update({
         "config": _json_safe(ctx["base_config"]),
         "env": ctx["env"],
         "data": {"n_cells": ctx["n_cells"], "n_genes": ctx["n_genes"]},
         "processed_path": ctx["rna_path"],
+        "atac_path": ctx.get("atac_path"),
         "model": ctx["backend"].key,
         "model_name": ctx["backend"].name,
         "model_params": _json_safe(ctx["model_params"]),

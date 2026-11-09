@@ -101,7 +101,8 @@ def _fail_set(verdicts) -> list:
 
 def run_replay(trace_dir: str, dataset_path: str = None, model: str = None,
                model_params: dict = None, output_dir: str = None,
-               judge_check: bool = True, finalize: bool = True) -> dict:
+               judge_check: bool = True, finalize: bool = True,
+               atac_path: str = None) -> dict:
     """按轨迹完整重放一次预处理（**全程不调用 LLM**）。
 
     参数：
@@ -112,6 +113,7 @@ def run_replay(trace_dir: str, dataset_path: str = None, model: str = None,
                     —— **刻意不写回原目录**，避免覆盖原任务的报告与产物
       judge_check   是否做「重放后判定 vs 轨迹记录判定」的等价性校验
       finalize      是否继续跑确定性收尾（QC/报告/processed_rna.h5ad）
+      atac_path     跨模态模型所需的配对 ATAC 路径（单模态模型忽略）
 
     执行顺序与原始运行严格一致：重放写操作 -> judge -> （校验）-> finalize。
     这样 judge 比较的是同一时点（收尾前），不会被 prepare_data 的基因筛选影响。
@@ -148,6 +150,15 @@ def run_replay(trace_dir: str, dataset_path: str = None, model: str = None,
         replay = replay_trace(trace_dir, execute_by_name)
         after = pt.judge(session.adata, backend)
 
+        # 第二模态：与原始运行一致，在收尾前加载并合并判定项
+        second, second_path = None, (atac_path or "").strip() or None
+        if backend.capabilities.needs_second_modality:
+            if not second_path:
+                raise ValueError(
+                    f"模型 {backend.name} 是跨模态模型，重放需要配对 ATAC 路径")
+            second = pt._read_data(second_path)
+            after = pt.merge_verdicts(after, backend.judge_second_modality(second, session.adata))
+
         out = dict(replay)
         out.update({
             "dataset": src,
@@ -177,7 +188,8 @@ def run_replay(trace_dir: str, dataset_path: str = None, model: str = None,
         if finalize and out.get("status") == "ok":
             result = pt.finalize_preprocess(
                 adata=session.adata, verdicts=after, output_dir=out_dir, backend=backend,
-                params=params, audit_log=session.audit_log, dataset_path=src)
+                params=params, audit_log=session.audit_log, dataset_path=src,
+                second=second, second_path=second_path)
             out["processed_path"] = result.get("processed_path")
             out["analysis_dir"] = (result.get("report") or {}).get("analysis_dir")
             # 产物目录若落在任务目录之内，给出可直接打开的静态地址

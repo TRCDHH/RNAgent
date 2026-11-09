@@ -14,11 +14,13 @@ def preprocess_node(state: dict):
         task_id = state.get("task_id", 1)
         dataset_id = state.get("dataset_id", 1)
         dataset_path = state.get("dataset_path", "")
+        atac_path = state.get("atac_path")
         output_dir = state.get("output_dir", ".")
         model = state.get("model")
         model_params = state.get("model_params")
         result = preprocess_dataset(task_id, dataset_id, dataset_path, output_dir,
-                                    model=model, model_params=model_params)
+                                    model=model, model_params=model_params,
+                                    atac_path=atac_path)
         emit("stage_end", {"stage": "preprocess", "status": "success"})
         return {"preprocess_status": "success", "preprocess": result, "current_stage": "preprocess"}
     except Exception as e:

@@ -267,11 +267,12 @@ def _run_react_loop(session: PreprocessSession):
 # ---------------------------------------------------------------------------
 def run_preprocess_react(task_id: int, dataset_id: int, dataset_path: str, output_dir: str,
                          model: str = None, model_params: dict = None,
-                         fast_path_if_clean: bool = False) -> dict:
+                         fast_path_if_clean: bool = False, atac_path: str = None) -> dict:
     """ReAct 模式预处理：LLM 决策修复 -> 确定性收尾 -> 返回与 pipeline 模式同构的结果。
 
     fast_path_if_clean=True（对应 PREPROCESS_MODE=auto）：首次判定无 FAIL 时跳过 LLM，
     直接进入确定性收尾 —— 只在真正需要判断时才付 LLM 的代价。
+    atac_path：跨模态模型的配对 ATAC 数据（单模态模型忽略）。
     """
     from app.tools.models import get_backend
 
@@ -323,6 +324,23 @@ def run_preprocess_react(task_id: int, dataset_id: int, dataset_path: str, outpu
                               "detail": json.dumps(verdicts, ensure_ascii=False)})
     emit("preprocess_log", {"message": f"决策结束后判定：{verdicts['status']}"})
 
+    # 3.5) 第二模态：不属于「数据修复」范畴（LLM 无决策空间），由确定性代码加载与判定
+    second, second_path = None, (atac_path or "").strip() or None
+    if backend.capabilities.needs_second_modality:
+        if not second_path:
+            raise ValueError(
+                f"模型 {backend.name} 是跨模态模型，需要数据集的「配对 ATAC 路径」；"
+                f"请在数据集上补充 ATAC 数据")
+        emit("preprocess_log", {
+            "message": f"加载配对 {backend.capabilities.second_modality.upper()} 数据：{second_path}"})
+        second = pt._read_data(second_path)
+        atac_verdicts = backend.judge_second_modality(second, session.adata)
+        verdicts = pt.merge_verdicts(verdicts, atac_verdicts)
+        session.verdicts = verdicts
+        session.audit_log.append({"time": now_iso(), "op": "judge_second_modality",
+                                  "detail": json.dumps(atac_verdicts, ensure_ascii=False)})
+        emit("preprocess_log", {"message": f"第二模态判定完成：{verdicts['status']}"})
+
     trace_file = save_trace(output_dir, session)
     emit("preprocess_log", {
         "message": f"Agent 轨迹已归档：{trace_file}"
@@ -332,6 +350,7 @@ def run_preprocess_react(task_id: int, dataset_id: int, dataset_path: str, outpu
     result = pt.finalize_preprocess(
         adata=session.adata, verdicts=verdicts, output_dir=output_dir, backend=backend,
         params=params, audit_log=session.audit_log, dataset_path=dataset_path,
+        second=second, second_path=second_path,
     )
     result.update({
         "preprocess_mode": "react",
